@@ -77,7 +77,14 @@ var forwarder = {
             return false;
         }
 
-        // 步骤3：长按第一条新消息
+        // 步骤3：转发前先保存书签（指向最新消息）
+        // 这样即使后续转发过程中崩溃，重启后书签已经指向最新位置，不会重复转发
+        if (lastMsg) {
+            storage.saveBookmark(lastMsg.sender, lastMsg.content, lastMsg.time);
+            utils.log("书签已提前更新: " + (lastMsg.sender || "") + ": " + (lastMsg.content || "").substring(0, 20));
+        }
+
+        // 步骤4：长按第一条新消息
         utils.log("长按第一条新消息: " + (firstNewMsg.sender || "") + ": " + (firstNewMsg.content || "").substring(0, 20));
         var msgElem = collector.findMessageElement(firstNewMsg);
         if (!msgElem) {
@@ -88,7 +95,7 @@ var forwarder = {
         var b = msgElem.bounds();
         utils.safeLongPress(b.centerX(), b.centerY());
 
-        // 步骤4：点击"多选"
+        // 步骤5：点击"多选"
         var multiSelectBtn = text("多选").findOne(3000) || desc("多选").findOne(2000);
         if (!multiSelectBtn) {
             utils.log("找不到'多选'按钮");
@@ -98,7 +105,7 @@ var forwarder = {
         utils.safeClick(multiSelectBtn);
         utils.wait(800);
 
-        // 步骤5：滚动到最底部，然后点"选择到这里"全选新消息
+        // 步骤6：滚动到最底部，然后点"选择到这里"全选新消息
         utils.log("滚动到最新消息并全选...");
         var selectOk = forwarder._scrollAndSelectToHere();
         if (!selectOk) {
@@ -107,7 +114,7 @@ var forwarder = {
             return false;
         }
 
-        // 步骤6：点击"转发"
+        // 步骤7：点击"转发"
         utils.log("点击转发...");
         var forwardOk = forwarder._clickForward();
         if (!forwardOk) {
@@ -116,7 +123,7 @@ var forwarder = {
             return false;
         }
 
-        // 步骤7：在选群页面勾选所有目标群
+        // 步骤8：在选群页面勾选所有目标群
         utils.log("选择目标群...");
         var selectGroupOk = forwarder._selectTargetGroups();
         if (!selectGroupOk) {
@@ -126,7 +133,7 @@ var forwarder = {
             return false;
         }
 
-        // 步骤8：点击发送
+        // 步骤9：点击发送
         utils.log("确认发送...");
         var sendOk = forwarder._confirmSend();
         if (!sendOk) {
@@ -134,13 +141,8 @@ var forwarder = {
             return false;
         }
 
-        // 步骤9：更新书签为当前最后一条消息
-        if (lastMsg) {
-            storage.saveBookmark(lastMsg.sender, lastMsg.content, lastMsg.time);
-            utils.log("书签已更新: " + (lastMsg.sender || "") + ": " + (lastMsg.content || "").substring(0, 20));
-        }
-
-        // 保存消息记录
+        // 书签已在步骤3提前保存，这里不需要再保存
+        // 保存消息记录到本地 JSON
         storage.saveMessages([firstNewMsg]);
 
         utils.log("转发完成！");
