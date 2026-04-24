@@ -1,0 +1,63 @@
+name: Build APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Download AutoJs6 APK template
+        run: |
+          wget -q "https://github.com/SuperMonster003/AutoJs6/releases/download/v6.7.0/autojs6-v6.7.0-universal-047ae62e.apk" -O autojs6.apk
+          ls -lh autojs6.apk
+
+      - name: Build APK with AutoJs6-ApkBuilder
+        uses: Steven-Qiang/AutoJs6-ApkBuilder@main
+        with:
+          autojs: autojs6.apk
+          source: .
+          output: wework-collector.apk
+
+      - name: Verify APK
+        run: |
+          ls -lh wework-collector.apk
+          file wework-collector.apk
+
+      - name: Create Release and Upload APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG_NAME" \
+            --title "企微消息采集 $TAG_NAME" \
+            --notes "## 企微消息采集转发工具
+
+          ### 安装说明
+          1. 下载 \`wework-collector.apk\` 安装到 Android 手机
+          2. 打开应用，授予**无障碍服务**权限
+          3. 填写源群名称和目标群名称
+          4. 点击「启动采集」
+
+          ### 前提条件
+          - 企业微信已登录
+          - 手机屏幕保持常亮
+          - 已授予无障碍服务权限
+
+          ### 更新日志
+          - 自动构建版本 $TAG_NAME" \
+            wework-collector.apk

@@ -1,0 +1,20 @@
+{
+    "name": "企微消息采集",
+    "packageName": "com.pythonzjw.weworkcollector",
+    "versionName": "1.0.0",
+    "versionCode": 1,
+    "mainScriptFileName": "main.js",
+    "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+    ],
+    "launchConfig": {
+        "hideLogs": false,
+        "stableMode": true,
+        "splashText": "企微消息采集转发"
+    },
+    "signatureScheme": "V1 + V2"
+}
