@@ -26,12 +26,17 @@ jobs:
           wget -q "https://github.com/SuperMonster003/AutoJs6/releases/download/v6.7.0/autojs6-v6.7.0-universal-047ae62e.apk" -O autojs6.apk
           ls -lh autojs6.apk
 
-      - name: Build APK with AutoJs6-ApkBuilder
-        uses: Steven-Qiang/AutoJs6-ApkBuilder@main
-        with:
-          autojs: autojs6.apk
-          source: .
-          output: wework-collector.apk
+      - name: Download ApkBuilder CLI
+        run: |
+          wget -q "https://github.com/Steven-Qiang/AutoJs6-ApkBuilder/releases/download/v1.1.0/apkbuilder-cli.jar" -O apkbuilder-cli.jar
+          ls -lh apkbuilder-cli.jar
+
+      - name: Build APK
+        run: |
+          java -jar apkbuilder-cli.jar \
+            -a autojs6.apk \
+            -s . \
+            -o wework-collector.apk
 
       - name: Verify APK
         run: |
