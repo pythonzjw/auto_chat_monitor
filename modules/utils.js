@@ -11,12 +11,11 @@ var utils = {
      */
     fingerprint: function (sender, time, content) {
         var key = (sender || "") + "|" + (time || "") + "|" + (content || "").substring(0, 30);
-        // 简单哈希
         var hash = 0;
         for (var i = 0; i < key.length; i++) {
             var ch = key.charCodeAt(i);
             hash = ((hash << 5) - hash) + ch;
-            hash = hash & hash; // 转为32位整数
+            hash = hash & hash;
         }
         return hash.toString(36);
     },
@@ -33,13 +32,6 @@ var utils = {
 
     /**
      * 解析企业微信消息中的时间文本
-     * 企业微信显示的时间格式可能有：
-     *   - "10:30"（今天的消息）
-     *   - "昨天 10:30"
-     *   - "星期一 10:30"
-     *   - "2026/04/20 10:30"
-     *   - "4月20日 10:30"
-     * 
      * 返回 Date 对象，解析失败返回 null
      */
     parseMessageTime: function (timeText) {
@@ -49,7 +41,7 @@ var utils = {
         var now = new Date();
         var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-        // 格式: "HH:mm" — 今天
+        // 格式: "HH:mm"
         var m = timeText.match(/^(\d{1,2}):(\d{2})$/);
         if (m) {
             return new Date(today.getFullYear(), today.getMonth(), today.getDate(),
@@ -67,7 +59,6 @@ var utils = {
         // 格式: "星期X HH:mm"
         m = timeText.match(/^星期[一二三四五六日天]\s*(\d{1,2}):(\d{2})$/);
         if (m) {
-            // 粗略处理，当作本周内的消息
             return new Date(today.getFullYear(), today.getMonth(), today.getDate(),
                 parseInt(m[1]), parseInt(m[2]));
         }
@@ -91,12 +82,9 @@ var utils = {
 
     /**
      * 判断时间是否在回溯范围内
-     * @param {Date} msgTime 消息时间
-     * @param {number} lookbackMinutes 回溯分钟数
-     * @returns {boolean}
      */
     isWithinLookback: function (msgTime, lookbackMinutes) {
-        if (!msgTime) return true; // 解析不了的默认采集
+        if (!msgTime) return true;
         var cutoff = new Date(Date.now() - lookbackMinutes * 60 * 1000);
         return msgTime.getTime() >= cutoff.getTime();
     },
@@ -107,12 +95,11 @@ var utils = {
     log: function (msg) {
         var line = "[" + utils.now() + "] " + msg;
         console.log(line);
-        // 同时写入日志文件
         try {
             var logPath = config.dataDir + config.logFile;
             files.append(logPath, line + "\n");
         } catch (e) {
-            // 忽略写日志失败
+            // 忽略
         }
     },
 
@@ -126,75 +113,116 @@ var utils = {
     },
 
     /**
-     * 等待指定毫秒
+     * 生成随机整数 [min, max]
+     */
+    randomInt: function (min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    },
+
+    /**
+     * 等待指定毫秒（加随机偏移，模拟真人）
      */
     wait: function (ms) {
+        var extra = utils.randomInt(0, config.randomDelayMax);
+        sleep(ms + extra);
+    },
+
+    /**
+     * 等待指定秒（加随机偏移）
+     */
+    waitSeconds: function (seconds) {
+        var extra = utils.randomInt(0, config.randomDelayMax);
+        sleep(seconds * 1000 + extra);
+    },
+
+    /**
+     * 精确等待，不加随机偏移
+     */
+    waitExact: function (ms) {
         sleep(ms);
     },
 
     /**
-     * 等待指定秒
+     * 给坐标加随机偏移，模拟真人点击位置不精确
      */
-    waitSeconds: function (seconds) {
-        sleep(seconds * 1000);
+    offsetXY: function (x, y) {
+        var ox = utils.randomInt(-config.clickOffsetMax, config.clickOffsetMax);
+        var oy = utils.randomInt(-config.clickOffsetMax, config.clickOffsetMax);
+        return { x: x + ox, y: y + oy };
     },
 
     /**
-     * 安全点击控件，带重试
-     * @param {UiObject} obj 控件对象
-     * @param {number} retries 重试次数
-     * @returns {boolean} 是否点击成功
+     * 安全点击控件，带重试和随机偏移
      */
     safeClick: function (obj, retries) {
         retries = retries || 3;
         for (var i = 0; i < retries; i++) {
             try {
                 if (obj && obj.exists()) {
-                    obj.click();
+                    var b = obj.bounds();
+                    var pos = utils.offsetXY(b.centerX(), b.centerY());
+                    click(pos.x, pos.y);
                     utils.wait(config.clickDelay);
                     return true;
                 }
             } catch (e) {
                 utils.debug("点击失败，重试 " + (i + 1) + "/" + retries);
             }
-            utils.wait(500);
+            utils.waitExact(500);
         }
         return false;
     },
 
     /**
-     * 安全点击坐标
+     * 安全点击坐标（带随机偏移）
      */
     safeClickXY: function (x, y) {
-        click(x, y);
+        var pos = utils.offsetXY(x, y);
+        click(pos.x, pos.y);
         utils.wait(config.clickDelay);
     },
 
     /**
-     * 向上滑动（模拟手指上划翻看历史消息）
+     * 长按坐标（带随机偏移）
+     */
+    safeLongPress: function (x, y) {
+        var pos = utils.offsetXY(x, y);
+        press(pos.x, pos.y, config.longPressDuration + utils.randomInt(0, 200));
+        utils.wait(config.clickDelay);
+    },
+
+    /**
+     * 向上滑动（模拟手指上划翻看历史消息，带随机偏移）
      */
     swipeUp: function () {
         var w = device.width;
         var h = device.height;
-        swipe(w / 2, h * 0.3, w / 2, h * 0.7, 300);
+        var startX = w / 2 + utils.randomInt(-30, 30);
+        var startY = h * 0.3 + utils.randomInt(-20, 20);
+        var endX = w / 2 + utils.randomInt(-30, 30);
+        var endY = h * 0.7 + utils.randomInt(-20, 20);
+        var duration = 300 + utils.randomInt(0, 200);
+        swipe(startX, startY, endX, endY, duration);
         utils.wait(config.swipeDelay);
     },
 
     /**
-     * 向下滑动
+     * 向下滑动（带随机偏移）
      */
     swipeDown: function () {
         var w = device.width;
         var h = device.height;
-        swipe(w / 2, h * 0.7, w / 2, h * 0.3, 300);
+        var startX = w / 2 + utils.randomInt(-30, 30);
+        var startY = h * 0.7 + utils.randomInt(-20, 20);
+        var endX = w / 2 + utils.randomInt(-30, 30);
+        var endY = h * 0.3 + utils.randomInt(-20, 20);
+        var duration = 300 + utils.randomInt(0, 200);
+        swipe(startX, startY, endX, endY, duration);
         utils.wait(config.swipeDelay);
     },
 
     /**
      * 等待控件出现
-     * @param {function} selectorFn 返回 UiSelector 的函数
-     * @param {number} timeout 超时毫秒数
-     * @returns {UiObject|null}
      */
     waitForSelector: function (selectorFn, timeout) {
         timeout = timeout || config.pageLoadTimeout;
@@ -204,7 +232,7 @@ var utils = {
             if (obj && obj.exists()) {
                 return obj;
             }
-            utils.wait(300);
+            utils.waitExact(300);
         }
         return null;
     },
@@ -213,8 +241,7 @@ var utils = {
      * 检查当前是否在企业微信中
      */
     isInWeWork: function () {
-        var pkg = currentPackage();
-        return pkg === config.packageName;
+        return currentPackage() === config.packageName;
     },
 
     /**
@@ -224,7 +251,7 @@ var utils = {
         if (!utils.isInWeWork()) {
             utils.log("企业微信不在前台，正在启动...");
             app.launchPackage(config.packageName);
-            utils.wait(3000);
+            utils.waitExact(3000);
             if (!utils.isInWeWork()) {
                 utils.log("启动企业微信失败！");
                 return false;

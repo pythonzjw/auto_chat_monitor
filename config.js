@@ -10,7 +10,7 @@ var config = {
     // 源群名称（要监控采集消息的群）
     sourceGroup: "测试源群",
 
-    // 目标群名称列表（采集到的消息转发到这些群）
+    // 目标群名称列表（转发时在选群页面勾选这些群，最多9个）
     targetGroups: [
         "目标群1",
         "目标群2",
@@ -26,25 +26,14 @@ var config = {
     enterGroupWaitSeconds: 3,
 
     // 每轮轮询间隔秒数（采集完一轮后等待多久再检查新消息）
-    pollIntervalSeconds: 15,
-
-    // ==================== 转发配置 ====================
-
-    // 每次转发最大消息条数（企业微信限制为9条）
-    maxForwardCount: 9,
-
-    // 每次转发操作后的等待秒数（避免操作太快被风控）
-    forwardIntervalSeconds: 2,
-
-    // 转发到每个目标群之间的等待秒数
-    targetGroupIntervalSeconds: 1,
+    pollIntervalSeconds: 30,
 
     // ==================== 操作延时配置（毫秒） ====================
 
-    // 点击操作后的等待时间
+    // 点击操作后的等待时间（基准值，实际会加随机偏移）
     clickDelay: 800,
 
-    // 滑动操作后的等待时间
+    // 滑动操作后的等待时间（基准值）
     swipeDelay: 1000,
 
     // 长按操作的持续时间
@@ -52,6 +41,15 @@ var config = {
 
     // 等待页面加载的超时时间
     pageLoadTimeout: 5000,
+
+    // 搜索群名后等待搜索结果的时间
+    searchWaitDelay: 1500,
+
+    // 随机延时范围（在基准延时上额外加 0~此值 的随机毫秒数，模拟真人）
+    randomDelayMax: 500,
+
+    // 点击坐标随机偏移像素范围（点击位置会在目标点上下左右偏移 0~此值 像素）
+    clickOffsetMax: 8,
 
     // ==================== 存储配置 ====================
 
@@ -63,6 +61,9 @@ var config = {
 
     // 已转发消息指纹文件名（防重复）
     fingerprintFile: "fingerprints.json",
+
+    // 书签文件名（记录上次转发到哪条消息）
+    bookmarkFile: "bookmark.json",
 
     // 日志文件名
     logFile: "collector.log",

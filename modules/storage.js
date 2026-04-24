@@ -1,7 +1,7 @@
 /**
  * 本地存储模块
  * 
- * 负责消息持久化和指纹去重
+ * 负责消息持久化、指纹去重、书签管理
  */
 
 var config = require("../config.js");
@@ -14,11 +14,13 @@ var storage = {
     // 消息列表缓存
     _messages: [],
 
+    // 书签（上次转发的最后一条消息标识）
+    _bookmark: null,
+
     /**
      * 初始化存储目录和文件
      */
     init: function () {
-        // 确保目录存在
         files.ensureDir(config.dataDir);
         files.ensureDir(config.dataDir + "screenshots/");
 
@@ -48,13 +50,75 @@ var storage = {
             }
         }
 
+        // 加载书签
+        var bmPath = config.dataDir + config.bookmarkFile;
+        if (files.exists(bmPath)) {
+            try {
+                var data = files.read(bmPath);
+                storage._bookmark = JSON.parse(data);
+                utils.log("已加载书签: " + JSON.stringify(storage._bookmark));
+            } catch (e) {
+                utils.log("书签文件解析失败: " + e);
+                storage._bookmark = null;
+            }
+        }
+
         utils.log("存储模块初始化完成，数据目录: " + config.dataDir);
     },
 
+    // ==================== 书签管理 ====================
+
+    /**
+     * 保存书签（记录上次转发到的最后一条消息）
+     * @param {string} sender 发送人
+     * @param {string} content 消息内容（前30字）
+     * @param {string} time 消息时间标签
+     */
+    saveBookmark: function (sender, content, time) {
+        storage._bookmark = {
+            sender: sender || "",
+            content: (content || "").substring(0, 30),
+            time: time || "",
+            savedAt: utils.now()
+        };
+        try {
+            var path = config.dataDir + config.bookmarkFile;
+            files.write(path, JSON.stringify(storage._bookmark, null, 2));
+            utils.debug("书签已保存: " + JSON.stringify(storage._bookmark));
+        } catch (e) {
+            utils.log("保存书签失败: " + e);
+        }
+    },
+
+    /**
+     * 获取当前书签
+     * @returns {object|null} {sender, content, time} 或 null
+     */
+    getBookmark: function () {
+        return storage._bookmark;
+    },
+
+    /**
+     * 检查一条消息是否匹配书签
+     * @param {string} sender 发送人
+     * @param {string} content 消息内容
+     * @returns {boolean}
+     */
+    matchesBookmark: function (sender, content) {
+        if (!storage._bookmark) return false;
+        var bmContent = storage._bookmark.content;
+        var bmSender = storage._bookmark.sender;
+        // 内容匹配（前30字）
+        var contentMatch = (content || "").substring(0, 30) === bmContent;
+        // 发送人匹配
+        var senderMatch = (sender || "") === bmSender;
+        return contentMatch && senderMatch;
+    },
+
+    // ==================== 指纹管理 ====================
+
     /**
      * 检查消息是否已经转发过
-     * @param {string} fp 消息指纹
-     * @returns {boolean}
      */
     isForwarded: function (fp) {
         return !!storage._fingerprints[fp];
@@ -62,7 +126,6 @@ var storage = {
 
     /**
      * 标记消息为已转发
-     * @param {string} fp 消息指纹
      */
     markForwarded: function (fp) {
         storage._fingerprints[fp] = utils.now();
@@ -71,7 +134,6 @@ var storage = {
 
     /**
      * 批量标记为已转发
-     * @param {string[]} fps 指纹数组
      */
     markForwardedBatch: function (fps) {
         var time = utils.now();
@@ -81,9 +143,10 @@ var storage = {
         storage._saveFingerprints();
     },
 
+    // ==================== 消息记录 ====================
+
     /**
      * 保存消息记录
-     * @param {object} msg 消息对象 {sender, time, content, type, collectTime}
      */
     saveMessage: function (msg) {
         msg.collectTime = utils.now();
@@ -93,7 +156,6 @@ var storage = {
 
     /**
      * 批量保存消息
-     * @param {object[]} msgs 消息数组
      */
     saveMessages: function (msgs) {
         var time = utils.now();
@@ -105,7 +167,7 @@ var storage = {
     },
 
     /**
-     * 清理过期指纹（超过7天的），防止文件无限增长
+     * 清理过期指纹（超过7天的）
      */
     cleanOldFingerprints: function () {
         var cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -124,9 +186,6 @@ var storage = {
         }
     },
 
-    /**
-     * 持久化指纹数据到文件
-     */
     _saveFingerprints: function () {
         try {
             var path = config.dataDir + config.fingerprintFile;
@@ -136,9 +195,6 @@ var storage = {
         }
     },
 
-    /**
-     * 持久化消息数据到文件
-     */
     _saveMessages: function () {
         try {
             var path = config.dataDir + config.messageFile;

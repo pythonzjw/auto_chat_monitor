@@ -4,18 +4,14 @@
  * 功能：
  *   1. 持续监控指定源群的消息
  *   2. 启动时先回溯 N 分钟的历史消息并转发
- *   3. 之后持续轮询，有新消息就转发到所有目标群
+ *   3. 之后持续轮询，有新消息就一次全选转发到所有目标群（最多9个）
  *   4. 消息本地备份到 JSON 文件
  * 
- * 运行环境：Auto.js / Hamibot
+ * 运行环境：AutoJs6 APK
  * 前提条件：
  *   - 已授予无障碍服务权限
  *   - 企业微信已登录
  *   - 手机屏幕保持常亮
- * 
- * 使用方法：
- *   1. 修改 config.js 中的群名称和参数
- *   2. 在 Auto.js 中运行本脚本
  */
 
 "ui";
@@ -29,11 +25,10 @@ var collector = require("./modules/collector.js");
 var forwarder = require("./modules/forwarder.js");
 
 // ==================== UI 界面 ====================
-// 提供一个简单的配置和启动界面
 
 ui.layout(
     <vertical padding="16">
-        <text text="企业微信消息采集转发" textSize="20sp" textStyle="bold" gravity="center" marginBottom="16" />
+        <text text="企微消息采集转发" textSize="20sp" textStyle="bold" gravity="center" marginBottom="16" />
 
         <horizontal>
             <text text="源群名称:" textSize="14sp" w="80" />
@@ -42,7 +37,7 @@ ui.layout(
 
         <horizontal marginTop="8">
             <text text="目标群:" textSize="14sp" w="80" />
-            <input id="targetGroups" text="" textSize="14sp" w="*" hint="多个群用逗号分隔" />
+            <input id="targetGroups" text="" textSize="14sp" w="*" hint="多个群用逗号分隔，最多9个" />
         </horizontal>
 
         <horizontal marginTop="8">
@@ -57,7 +52,7 @@ ui.layout(
 
         <horizontal marginTop="8">
             <text text="轮询间隔(秒):" textSize="14sp" w="100" />
-            <input id="pollInterval" text="15" textSize="14sp" inputType="number" w="100" />
+            <input id="pollInterval" text="30" textSize="14sp" inputType="number" w="100" />
         </horizontal>
 
         <horizontal marginTop="16" gravity="center">
@@ -90,7 +85,6 @@ function appendLog(msg) {
     var line = "[" + utils.now() + "] " + msg;
     ui.run(function () {
         var current = ui.logArea.getText() || "";
-        // 限制日志行数，防止内存溢出
         var lines = current.split("\n");
         if (lines.length > 200) {
             lines = lines.slice(lines.length - 150);
@@ -117,10 +111,12 @@ ui.btnStart.on("click", function () {
     // 读取 UI 上的配置
     config.sourceGroup = ui.sourceGroup.getText().toString().trim();
     var targetStr = ui.targetGroups.getText().toString().trim();
-    config.targetGroups = targetStr.split(/[,，]/).map(function (s) { return s.trim(); }).filter(function (s) { return s !== ""; });
+    config.targetGroups = targetStr.split(/[,，]/)
+        .map(function (s) { return s.trim(); })
+        .filter(function (s) { return s !== ""; });
     config.lookbackMinutes = parseInt(ui.lookback.getText().toString()) || 10;
     config.enterGroupWaitSeconds = parseInt(ui.enterWait.getText().toString()) || 3;
-    config.pollIntervalSeconds = parseInt(ui.pollInterval.getText().toString()) || 15;
+    config.pollIntervalSeconds = parseInt(ui.pollInterval.getText().toString()) || 30;
 
     // 校验
     if (!config.sourceGroup) {
@@ -131,11 +127,14 @@ ui.btnStart.on("click", function () {
         toast("请填写至少一个目标群");
         return;
     }
+    if (config.targetGroups.length > 9) {
+        toast("目标群最多9个，当前 " + config.targetGroups.length + " 个");
+        return;
+    }
 
     running = true;
     toast("采集任务已启动");
 
-    // 在新线程中运行主逻辑
     mainThread = threads.start(function () {
         try {
             runCollector();
@@ -168,7 +167,7 @@ function runCollector() {
     utils.log("========================================");
     utils.log("企业微信消息采集转发 - 启动");
     utils.log("源群: " + config.sourceGroup);
-    utils.log("目标群: " + config.targetGroups.join(", "));
+    utils.log("目标群 (" + config.targetGroups.length + "个): " + config.targetGroups.join(", "));
     utils.log("回溯: " + config.lookbackMinutes + " 分钟");
     utils.log("进群等待: " + config.enterGroupWaitSeconds + " 秒");
     utils.log("轮询间隔: " + config.pollIntervalSeconds + " 秒");
@@ -192,8 +191,8 @@ function runCollector() {
         return;
     }
 
-    // ===== Phase 1: 采集历史消息 =====
-    utils.log("===== Phase 1: 采集历史消息 =====");
+    // ===== Phase 1: 进入源群并执行首次转发 =====
+    utils.log("===== Phase 1: 进入源群 =====");
 
     var enterOk = navigator.enterGroup(config.sourceGroup);
     if (!enterOk) {
@@ -205,21 +204,27 @@ function runCollector() {
     utils.log("已进入源群，等待 " + config.enterGroupWaitSeconds + " 秒...");
     utils.waitSeconds(config.enterGroupWaitSeconds);
 
-    // 采集历史消息
-    var historyMessages = collector.collectHistoryMessages(config.lookbackMinutes);
-    utils.log("历史消息采集完成: " + historyMessages.length + " 条");
-
-    // 转发历史消息
-    if (historyMessages.length > 0) {
-        utils.log("开始转发历史消息...");
-        // 先滚动到最底部，确保最新的消息可见
-        for (var i = 0; i < 3; i++) {
-            utils.swipeDown();
+    // 检查是否有新消息需要转发
+    if (collector.hasNewMessages()) {
+        utils.log("发现新消息，执行首次转发...");
+        var success = forwarder.forwardNewMessages();
+        if (success) {
+            utils.log("首次转发完成");
+        } else {
+            utils.log("首次转发失败，继续进入监控模式");
         }
-        utils.wait(1000);
 
-        forwarder.forwardMessages(historyMessages);
-        utils.log("历史消息转发完成");
+        // 转发完后确保回到源群
+        navigator.enterGroup(config.sourceGroup);
+        utils.waitSeconds(config.enterGroupWaitSeconds);
+    } else {
+        utils.log("没有新消息，直接进入监控模式");
+        // 记录当前最后一条消息作为书签起点
+        var lastMsg = collector.getLastMessage();
+        if (lastMsg && !storage.getBookmark()) {
+            storage.saveBookmark(lastMsg.sender, lastMsg.content, lastMsg.time);
+            utils.log("已记录初始书签");
+        }
     }
 
     // ===== Phase 2: 持续监控新消息 =====
@@ -230,25 +235,33 @@ function runCollector() {
 
     while (running) {
         try {
+            // 等待轮询间隔（可中断）
+            utils.log("等待 " + config.pollIntervalSeconds + " 秒后检查...");
+            for (var w = 0; w < config.pollIntervalSeconds && running; w++) {
+                sleep(1000);
+            }
+            if (!running) break;
+
             // 确保企业微信在前台
             if (!utils.isInWeWork()) {
                 utils.log("企业微信不在前台，尝试恢复...");
                 utils.ensureWeWorkForeground();
-                utils.wait(2000);
+                utils.waitExact(2000);
                 navigator.enterGroup(config.sourceGroup);
                 utils.waitSeconds(config.enterGroupWaitSeconds);
             }
 
-            // 方案A：直接在源群页面检查新消息
-            // 如果当前还在源群聊天页面，直接采集
-            var newMessages = collector.collectNewMessages();
+            // 检查是否有新消息
+            if (collector.hasNewMessages()) {
+                utils.log("发现新消息，开始转发...");
+                var success = forwarder.forwardNewMessages();
+                if (success) {
+                    utils.log("转发完成");
+                } else {
+                    utils.log("转发失败");
+                }
 
-            if (newMessages.length > 0) {
-                utils.log("发现 " + newMessages.length + " 条新消息，开始转发...");
-                forwarder.forwardMessages(newMessages);
-                utils.log("新消息转发完成");
-
-                // 转发完后回到源群继续监控
+                // 转发后回到源群
                 navigator.enterGroup(config.sourceGroup);
                 utils.waitSeconds(config.enterGroupWaitSeconds);
             } else {
@@ -257,13 +270,7 @@ function runCollector() {
 
             consecutiveErrors = 0;
 
-            // 等待下一轮轮询
-            utils.log("等待 " + config.pollIntervalSeconds + " 秒后再次检查...");
-            for (var w = 0; w < config.pollIntervalSeconds && running; w++) {
-                sleep(1000);
-            }
-
-            // 定期清理过期指纹（每100轮清理一次）
+            // 定期清理过期指纹
             if (Math.random() < 0.01) {
                 storage.cleanOldFingerprints();
             }
@@ -278,13 +285,11 @@ function runCollector() {
                 break;
             }
 
-            // 异常后等待一段时间再重试
+            // 异常恢复
             utils.waitSeconds(5);
-
-            // 尝试恢复：回到消息列表再进入源群
             try {
                 navigator.goToMessageList();
-                utils.wait(1000);
+                utils.waitExact(1000);
                 navigator.enterGroup(config.sourceGroup);
                 utils.waitSeconds(config.enterGroupWaitSeconds);
             } catch (e2) {
