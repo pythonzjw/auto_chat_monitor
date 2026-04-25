@@ -66,9 +66,20 @@ jobs:
           cp modules/*.js assets/project/modules/
           find assets/project -name "*.js" -exec zip -u wework-collector.apk {} +
 
+          # ===== 2.5 从模板 APK 恢复 assets/modules/ 引擎内部文件 =====
+          # ApkBuilder 可能修改/损坏了引擎内部模块（如 js_object_observe_lite_min）
+          # 导致 ScriptRuntime.initEpilogue 崩溃：kotlin.Unit cannot be cast to BaseFunction
+          # 用原始模板 APK 中的 assets/modules/ 覆盖回去
+          unzip -o autojs6.apk "assets/modules/*" -d template_assets/
+          cd template_assets
+          find assets/modules -type f -exec zip -u ../wework-collector.apk {} +
+          cd ..
+
           # 验证 APK 中的文件路径
-          echo "APK 中 assets/project/ 下的文件:"
+          echo "=== APK 中 assets/project/ 下的文件 ==="
           zipinfo wework-collector.apk "assets/project/*" 2>/dev/null || true
+          echo "=== APK 中 assets/modules/ 下的文件 ==="
+          zipinfo wework-collector.apk "assets/modules/*" 2>/dev/null || true
 
           # ===== 3. 删除旧签名 =====
           zip -d wework-collector.apk "META-INF/*" || true
