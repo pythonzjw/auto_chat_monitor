@@ -463,7 +463,7 @@ var collector = {
             || /^昨天/.test(text)
             || /^星期/.test(text)
             || /^\d{1,2}月\d{1,2}日/.test(text)
-            || /^\d{4}[\/-]\d{1,2}[\/-]\d{1,2}/.test(text)
+            || /^\d{4}[/\-]\d{1,2}[/\-]\d{1,2}/.test(text)
             || /^上午\s*\d/.test(text)
             || /^下午\s*\d/.test(text);
     },

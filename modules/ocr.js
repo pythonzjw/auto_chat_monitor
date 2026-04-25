@@ -243,7 +243,7 @@ var ocr = {
             || /^昨天/.test(text)
             || /^星期/.test(text)
             || /^\d{1,2}月\d{1,2}日/.test(text)
-            || /^\d{4}[\/\-]/.test(text)
+            || /^\d{4}[/\-]/.test(text)
             || /^上午/.test(text)
             || /^下午/.test(text);
     }
