@@ -38,6 +38,39 @@ jobs:
             -s . \
             -o wework-collector.apk
 
+      - name: Fix missing native libraries
+        run: |
+          # ApkBuilder 打包时会遗漏部分 .so 文件（如 libjackpal-termexec2.so）
+          # 从模板 APK 中提取所有 native library 并注入到打包后的 APK 中
+
+          # 1. 提取模板 APK 中所有 .so 文件
+          unzip -o autojs6.apk "lib/*" -d template_libs/
+          echo "模板 APK 中的 .so 文件:"
+          find template_libs/lib -name "*.so" | head -50
+
+          # 2. 以不压缩方式注入到打包后的 APK（Android 要求 .so 以 STORED 方式存储）
+          cd template_libs
+          find lib -name "*.so" -exec zip -u -0 ../wework-collector.apk {} +
+          cd ..
+
+          # 3. 删除旧签名（修改了 APK 内容后签名失效）
+          zip -d wework-collector.apk "META-INF/*" || true
+
+          # 4. 页面对齐（.so 文件必须 4KB 对齐）
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          ${BUILD_TOOLS}zipalign -p -f 4 wework-collector.apk wework-collector-aligned.apk
+          mv wework-collector-aligned.apk wework-collector.apk
+
+          # 5. 生成调试签名并重新签名
+          keytool -genkeypair -keystore debug.keystore -storepass android \
+            -alias key -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Debug" 2>/dev/null
+          ${BUILD_TOOLS}apksigner sign \
+            --ks debug.keystore --ks-pass pass:android --key-pass pass:android \
+            wework-collector.apk
+
+          echo "修复完成"
+
       - name: Verify APK
         run: |
           ls -lh wework-collector.apk
