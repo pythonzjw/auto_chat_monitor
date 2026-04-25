@@ -75,14 +75,12 @@ jobs:
           # 2b. 删除 ApkBuilder 拷贝的无用模板副本（整个 temp 目录）
           zip -d wework-collector.apk "assets/project/temp/*" || true
 
-          # 2c. 写入明文 JS 源码
+          # 2c. 写入明文 JS 源码（路径必须是 assets/project/... 才能被 AutoJs6 识别）
           mkdir -p assets/project/modules
-          cp main.js config.js assets/project/
+          cp main.js config.js project.json assets/project/
           cp modules/*.js assets/project/modules/
           [ -f inspect.js ] && cp inspect.js assets/project/
-          cd assets
-          find project -type f -exec zip ../wework-collector.apk {} +
-          cd ..
+          find assets/project -type f -exec zip wework-collector.apk {} +
 
           # 2d. 从模板 APK 恢复引擎内部文件（assets/modules/ 等）
           # ApkBuilder 可能损坏了这些文件，导致 ScriptRuntime 初始化崩溃：
