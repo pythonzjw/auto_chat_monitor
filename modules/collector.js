@@ -459,13 +459,13 @@ var collector = {
      */
     _isTimeLabel: function (text) {
         if (!text) return false;
-        return /^\d{1,2}:\d{2}$/.test(text)
-            || /^昨天/.test(text)
-            || /^星期/.test(text)
-            || /^\d{1,2}月\d{1,2}日/.test(text)
-            || /^\d{4}[/\-]\d{1,2}[/\-]\d{1,2}/.test(text)
-            || /^上午\s*\d/.test(text)
-            || /^下午\s*\d/.test(text);
+        return new RegExp("^\\d{1,2}:\\d{2}$").test(text)
+            || new RegExp("^昨天").test(text)
+            || new RegExp("^星期").test(text)
+            || new RegExp("^\\d{1,2}月\\d{1,2}日").test(text)
+            || new RegExp("^\\d{4}[/\\-]\\d{1,2}[/\\-]\\d{1,2}").test(text)
+            || new RegExp("^上午\\s*\\d").test(text)
+            || new RegExp("^下午\\s*\\d").test(text);
     },
 
     /**

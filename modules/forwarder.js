@@ -298,7 +298,7 @@ var forwarder = {
     _confirmSend: function () {
         // 勾选完群后，点击"发送"或"确定"按钮
         // 企业微信可能显示"发送(N)"格式，N 是群的数量
-        var sendBtn = textMatches(/发送\s*\(\d+\)/).findOne(3000)
+        var sendBtn = textMatches("发送\\s*\\(\\d+\\)").findOne(3000)
             || text("发送").findOne(2000)
             || text("确定").findOne(2000)
             || text("确认").findOne(2000);

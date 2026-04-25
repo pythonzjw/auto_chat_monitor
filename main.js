@@ -111,7 +111,7 @@ ui.btnStart.on("click", function () {
     // 读取 UI 上的配置
     config.sourceGroup = ui.sourceGroup.getText().toString().trim();
     var targetStr = ui.targetGroups.getText().toString().trim();
-    config.targetGroups = targetStr.split(/[,，]/)
+    config.targetGroups = targetStr.split(new RegExp("[,，]"))
         .map(function (s) { return s.trim(); })
         .filter(function (s) { return s !== ""; });
     config.lookbackMinutes = parseInt(ui.lookback.getText().toString()) || 10;

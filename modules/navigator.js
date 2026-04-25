@@ -194,7 +194,7 @@ var navigator = {
             var parent = groupItem.parent();
             if (parent) {
                 // 查找未读数字角标
-                var badge = parent.findOne(className("TextView").textMatches("\\d+"));
+                var badge = parent.findOne(className("TextView").textMatches("^\\d+$"));
                 if (badge) {
                     utils.debug(groupName + " 有 " + badge.text() + " 条未读消息");
                     return true;

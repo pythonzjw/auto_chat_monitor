@@ -239,13 +239,13 @@ var ocr = {
      */
     _isTimeText: function (text) {
         if (!text) return false;
-        return /^\d{1,2}:\d{2}$/.test(text)
-            || /^昨天/.test(text)
-            || /^星期/.test(text)
-            || /^\d{1,2}月\d{1,2}日/.test(text)
-            || /^\d{4}[/\-]/.test(text)
-            || /^上午/.test(text)
-            || /^下午/.test(text);
+        return new RegExp("^\\d{1,2}:\\d{2}$").test(text)
+            || new RegExp("^昨天").test(text)
+            || new RegExp("^星期").test(text)
+            || new RegExp("^\\d{1,2}月\\d{1,2}日").test(text)
+            || new RegExp("^\\d{4}[/\\-]").test(text)
+            || new RegExp("^上午").test(text)
+            || new RegExp("^下午").test(text);
     }
 };
 

@@ -42,14 +42,14 @@ var utils = {
         var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
         // 格式: "HH:mm"
-        var m = timeText.match(/^(\d{1,2}):(\d{2})$/);
+        var m = timeText.match(new RegExp("^(\\d{1,2}):(\\d{2})$"));
         if (m) {
             return new Date(today.getFullYear(), today.getMonth(), today.getDate(),
                 parseInt(m[1]), parseInt(m[2]));
         }
 
         // 格式: "昨天 HH:mm"
-        m = timeText.match(/^昨天\s*(\d{1,2}):(\d{2})$/);
+        m = timeText.match(new RegExp("^昨天\\s*(\\d{1,2}):(\\d{2})$"));
         if (m) {
             var yesterday = new Date(today.getTime() - 86400000);
             return new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(),
@@ -57,21 +57,21 @@ var utils = {
         }
 
         // 格式: "星期X HH:mm"
-        m = timeText.match(/^星期[一二三四五六日天]\s*(\d{1,2}):(\d{2})$/);
+        m = timeText.match(new RegExp("^星期[一二三四五六日天]\\s*(\\d{1,2}):(\\d{2})$"));
         if (m) {
             return new Date(today.getFullYear(), today.getMonth(), today.getDate(),
                 parseInt(m[1]), parseInt(m[2]));
         }
 
         // 格式: "M月D日 HH:mm"
-        m = timeText.match(/^(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})$/);
+        m = timeText.match(new RegExp("^(\\d{1,2})月(\\d{1,2})日\\s*(\\d{1,2}):(\\d{2})$"));
         if (m) {
             return new Date(today.getFullYear(), parseInt(m[1]) - 1, parseInt(m[2]),
                 parseInt(m[3]), parseInt(m[4]));
         }
 
         // 格式: "yyyy/MM/dd HH:mm" 或 "yyyy-MM-dd HH:mm"
-        m = timeText.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\s*(\d{1,2}):(\d{2})$/);
+        m = timeText.match(new RegExp("^(\\d{4})[/\\-](\\d{1,2})[/\\-](\\d{1,2})\\s*(\\d{1,2}):(\\d{2})$"));
         if (m) {
             return new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]),
                 parseInt(m[4]), parseInt(m[5]));
