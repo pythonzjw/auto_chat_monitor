@@ -43,6 +43,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
+      - name: Patch AGP 版本兼容性
+        working-directory: autojs6
+        run: |
+          # activity-ktx:1.12.2 需要 AGP 8.9.1+，而 CI 的 Temurin 环境默认选择 AGP 8.7.3
+          # 通过 version.properties 覆盖 AGP 版本到 8.9.3（Gradle 9.4.0 完全兼容）
+          sed -i 's/^OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=NONE$/OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=8.9.3/' version.properties
+          echo "=== 已覆盖 AGP 版本 ==="
+          grep OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION version.properties
+
       - name: Build inrt flavor
         working-directory: autojs6
         run: |
