@@ -21,10 +21,23 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Download AutoJs6 APK template
+      - name: Download AutoJs6 inrt template APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          wget -q "https://github.com/SuperMonster003/AutoJs6/releases/download/v6.7.0/autojs6-v6.7.0-universal-047ae62e.apk" -O autojs6.apk
+          # 下载从 AutoJs6 源码编译的 inrt flavor APK（不是完整 IDE APK）
+          # inrt 是专门的独立运行时，没有 IDE UI，BuildConfig.isInrt=true
+          gh release download "inrt-template-v6.7.0" \
+            --repo "${{ github.repository }}" \
+            --pattern "autojs6-inrt-v6.7.0.apk" \
+            --output autojs6.apk
           ls -lh autojs6.apk
+
+      - name: Download AutoJs6 full APK (for native libs)
+        run: |
+          # inrt APK 不含 .so（ndk.abiFilters 为空），需要从完整 IDE APK 提取 native library
+          wget -q "https://github.com/SuperMonster003/AutoJs6/releases/download/v6.7.0/autojs6-v6.7.0-universal-047ae62e.apk" -O autojs6-full.apk
+          ls -lh autojs6-full.apk
 
       - name: Download ApkBuilder CLI
         run: |
@@ -45,8 +58,8 @@ jobs:
         run: |
           BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
 
-          # ===== 1. 注入模板 APK 中所有 native library（修复 .so 缺失） =====
-          unzip -o autojs6.apk "lib/*" -d template_libs/
+          # ===== 1. 注入 native library（从完整 IDE APK 提取，inrt APK 无 .so） =====
+          unzip -o autojs6-full.apk "lib/*" -d template_libs/
           cd template_libs
           find lib -name "*.so" -exec zip -u -0 ../wework-collector.apk {} +
           cd ..
