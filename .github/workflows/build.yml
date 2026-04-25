@@ -38,7 +38,10 @@ jobs:
             -s . \
             -o wework-collector.apk
 
-      - name: Fix missing native libraries
+      - name: Fix native libraries and re-sign with release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           # ApkBuilder 打包时会遗漏部分 .so 文件（如 libjackpal-termexec2.so）
           # 从模板 APK 中提取所有 native library 并注入到打包后的 APK 中
@@ -61,15 +64,15 @@ jobs:
           ${BUILD_TOOLS}zipalign -p -f 4 wework-collector.apk wework-collector-aligned.apk
           mv wework-collector-aligned.apk wework-collector.apk
 
-          # 5. 生成调试签名并重新签名
-          keytool -genkeypair -keystore debug.keystore -storepass android \
-            -alias key -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Debug" 2>/dev/null
+          # 5. 从 Secrets 还原固定 keystore 并签名（确保每次构建签名一致，支持覆盖安装）
+          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
           ${BUILD_TOOLS}apksigner sign \
-            --ks debug.keystore --ks-pass pass:android --key-pass pass:android \
+            --ks release.keystore \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --key-pass "pass:$KEYSTORE_PASSWORD" \
             wework-collector.apk
 
-          echo "修复完成"
+          echo "修复完成，使用固定 release keystore 签名"
 
       - name: Verify APK
         run: |
