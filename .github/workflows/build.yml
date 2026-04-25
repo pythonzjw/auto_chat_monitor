@@ -52,34 +52,53 @@ jobs:
           cd ..
 
           # ===== 2. 用明文 JS 替换 ApkBuilder 加密的 JS（修复解密失败） =====
-          # ApkBuilder 对 JS 做了 AES 加密，但加密/解密密钥链路存在 bug
-          # AutoJs6 引擎支持直接执行明文 JS（检测到无加密文件头就走明文路径）
-          # 所以直接把明文源码写入 assets/project/ 即可
+          # ApkBuilder 做了两件事：
+          #   a) 把用户脚本加密后放到 assets/project/{main.js,config.js,modules/*.js}
+          #   b) 把模板 APK 的整个 assets/ 拷贝到 assets/project/temp/assets/
+          # 所以不能用通配符 "assets/project/*.js"（会递归删除 temp/ 下 140+ 个文件）
+          #
+          # 策略：精确删除 → 清理 temp → 写入明文 → 恢复引擎文件
 
-          # 删除 APK 中 ApkBuilder 写入的加密 JS
-          zip -d wework-collector.apk "assets/project/*.js" || true
-          zip -d wework-collector.apk "assets/project/modules/*.js" || true
+          # 2a. 精确删除 ApkBuilder 加密的用户脚本（逐个列出，不用通配符）
+          zip -d wework-collector.apk \
+            "assets/project/main.js" \
+            "assets/project/config.js" \
+            "assets/project/inspect.js" \
+            "assets/project/modules/collector.js" \
+            "assets/project/modules/forwarder.js" \
+            "assets/project/modules/navigator.js" \
+            "assets/project/modules/ocr.js" \
+            "assets/project/modules/storage.js" \
+            "assets/project/modules/utils.js" \
+            || true
 
-          # 写入明文 JS 源码（路径必须从 assets/ 开始，和 APK 内部结构一致）
+          # 2b. 删除 ApkBuilder 拷贝的无用模板副本（整个 temp 目录）
+          zip -d wework-collector.apk "assets/project/temp/*" || true
+
+          # 2c. 写入明文 JS 源码
           mkdir -p assets/project/modules
           cp main.js config.js assets/project/
           cp modules/*.js assets/project/modules/
-          find assets/project -name "*.js" -exec zip -u wework-collector.apk {} +
-
-          # ===== 2.5 从模板 APK 恢复 assets/modules/ 引擎内部文件 =====
-          # ApkBuilder 可能修改/损坏了引擎内部模块（如 js_object_observe_lite_min）
-          # 导致 ScriptRuntime.initEpilogue 崩溃：kotlin.Unit cannot be cast to BaseFunction
-          # 用原始模板 APK 中的 assets/modules/ 覆盖回去
-          unzip -o autojs6.apk "assets/modules/*" -d template_assets/
-          cd template_assets
-          find assets/modules -type f -exec zip -u ../wework-collector.apk {} +
+          [ -f inspect.js ] && cp inspect.js assets/project/
+          cd assets
+          find project -type f -exec zip ../wework-collector.apk {} +
           cd ..
 
-          # 验证 APK 中的文件路径
-          echo "=== APK 中 assets/project/ 下的文件 ==="
-          zipinfo wework-collector.apk "assets/project/*" 2>/dev/null || true
-          echo "=== APK 中 assets/modules/ 下的文件 ==="
-          zipinfo wework-collector.apk "assets/modules/*" 2>/dev/null || true
+          # 2d. 从模板 APK 恢复引擎内部文件（assets/modules/ 等）
+          # ApkBuilder 可能损坏了这些文件，导致 ScriptRuntime 初始化崩溃：
+          #   kotlin.Unit cannot be cast to BaseFunction (js_object_observe_lite_min)
+          unzip -o autojs6.apk "assets/modules/*" "assets/init.js" "assets/js-beautify/*" "assets/web/*" -d template_assets/ 2>/dev/null || true
+          cd template_assets
+          find assets -type f -exec zip ../wework-collector.apk {} +
+          cd ..
+
+          # 2e. 验证关键文件
+          echo "=== 用户脚本 ==="
+          zipinfo wework-collector.apk "assets/project/main.js" "assets/project/config.js" "assets/project/modules/utils.js" 2>/dev/null || true
+          echo "=== 引擎核心模块 ==="
+          zipinfo wework-collector.apk "assets/modules/object-observe-lite.min.js" "assets/modules/internal.js" "assets/init.js" 2>/dev/null || true
+          echo "=== 确认 temp 已清理 ==="
+          zipinfo wework-collector.apk "assets/project/temp/*" 2>/dev/null && echo "WARNING: temp still exists!" || echo "OK: temp cleaned"
 
           # ===== 3. 删除旧签名 =====
           zip -d wework-collector.apk "META-INF/*" || true
