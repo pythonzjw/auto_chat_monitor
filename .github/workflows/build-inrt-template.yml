@@ -1,0 +1,85 @@
+name: Build AutoJs6 Inrt Template
+
+# 手动触发，只需要编译一次（除非升级 AutoJs6 版本）
+on:
+  workflow_dispatch:
+    inputs:
+      autojs6_version:
+        description: 'AutoJs6 版本 tag（如 v6.7.0）'
+        required: true
+        default: 'v6.7.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-inrt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Clone AutoJs6 源码
+        run: |
+          git clone --depth 1 --branch "${{ github.event.inputs.autojs6_version }}" \
+            https://github.com/SuperMonster003/AutoJs6.git autojs6
+          ls -la autojs6/
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: autojs6/*.gradle*
+
+      - name: Install CMake 3.10.2
+        run: |
+          wget -q https://cmake.org/files/v3.10/cmake-3.10.2-Linux-x86_64.sh
+          chmod +x cmake-3.10.2-Linux-x86_64.sh
+          sudo ./cmake-3.10.2-Linux-x86_64.sh --skip-license --prefix=/usr/local
+          cmake --version
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Build inrt flavor
+        working-directory: autojs6
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleInrtRelease --no-daemon -Dorg.gradle.jvmargs="-Xms2g -Xmx4g"
+
+      - name: Find and rename output APK
+        id: find_apk
+        run: |
+          APK_PATH=$(find autojs6/app/build/outputs/apk/inrt/release/ -name "*.apk" | head -1)
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: inrt APK not found!"
+            find autojs6/app/build/outputs/ -name "*.apk" -ls
+            exit 1
+          fi
+          echo "apk_path=$APK_PATH"
+          cp "$APK_PATH" autojs6-inrt-${{ github.event.inputs.autojs6_version }}.apk
+          ls -lh autojs6-inrt-${{ github.event.inputs.autojs6_version }}.apk
+
+      - name: Upload inrt APK to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="inrt-template-${{ github.event.inputs.autojs6_version }}"
+
+          # 创建 Release（如果不存在）
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "AutoJs6 Inrt Template ${{ github.event.inputs.autojs6_version }}" \
+            --notes "AutoJs6 inrt flavor APK，用作 ApkBuilder 的模板。从 AutoJs6 ${{ github.event.inputs.autojs6_version }} 源码编译。" \
+            2>/dev/null || true
+
+          # 上传 APK（如果已存在同名文件则覆盖）
+          gh release upload "$TAG" \
+            --repo "${{ github.repository }}" \
+            --clobber \
+            "autojs6-inrt-${{ github.event.inputs.autojs6_version }}.apk"
+
+          echo "=== 上传完成 ==="
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
