@@ -60,16 +60,15 @@ jobs:
           zip -d wework-collector.apk "assets/project/*.js" || true
           zip -d wework-collector.apk "assets/project/modules/*.js" || true
 
-          # 写入明文 JS 源码
+          # 写入明文 JS 源码（路径必须从 assets/ 开始，和 APK 内部结构一致）
           mkdir -p assets/project/modules
           cp main.js config.js assets/project/
           cp modules/*.js assets/project/modules/
-          # inspect.js 不需要打包进去
-          # project.json 保留 ApkBuilder 写入的版本（含 buildInfo）
-          cd assets
-          zip -u ../wework-collector.apk project/main.js project/config.js
-          find project/modules -name "*.js" -exec zip -u ../wework-collector.apk {} +
-          cd ..
+          find assets/project -name "*.js" -exec zip -u wework-collector.apk {} +
+
+          # 验证 APK 中的文件路径
+          echo "APK 中 assets/project/ 下的文件:"
+          zipinfo wework-collector.apk "assets/project/*" 2>/dev/null || true
 
           # ===== 3. 删除旧签名 =====
           zip -d wework-collector.apk "META-INF/*" || true
