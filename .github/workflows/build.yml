@@ -38,33 +38,47 @@ jobs:
             -s . \
             -o wework-collector.apk
 
-      - name: Fix native libraries and re-sign with release keystore
+      - name: Fix APK (native libs + plaintext JS + re-sign)
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          # ApkBuilder 打包时会遗漏部分 .so 文件（如 libjackpal-termexec2.so）
-          # 从模板 APK 中提取所有 native library 并注入到打包后的 APK 中
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
 
-          # 1. 提取模板 APK 中所有 .so 文件
+          # ===== 1. 注入模板 APK 中所有 native library（修复 .so 缺失） =====
           unzip -o autojs6.apk "lib/*" -d template_libs/
-          echo "模板 APK 中的 .so 文件:"
-          find template_libs/lib -name "*.so" | head -50
-
-          # 2. 以不压缩方式注入到打包后的 APK（Android 要求 .so 以 STORED 方式存储）
           cd template_libs
           find lib -name "*.so" -exec zip -u -0 ../wework-collector.apk {} +
           cd ..
 
-          # 3. 删除旧签名（修改了 APK 内容后签名失效）
+          # ===== 2. 用明文 JS 替换 ApkBuilder 加密的 JS（修复解密失败） =====
+          # ApkBuilder 对 JS 做了 AES 加密，但加密/解密密钥链路存在 bug
+          # AutoJs6 引擎支持直接执行明文 JS（检测到无加密文件头就走明文路径）
+          # 所以直接把明文源码写入 assets/project/ 即可
+
+          # 删除 APK 中 ApkBuilder 写入的加密 JS
+          zip -d wework-collector.apk "assets/project/*.js" || true
+          zip -d wework-collector.apk "assets/project/modules/*.js" || true
+
+          # 写入明文 JS 源码
+          mkdir -p assets/project/modules
+          cp main.js config.js assets/project/
+          cp modules/*.js assets/project/modules/
+          # inspect.js 不需要打包进去
+          # project.json 保留 ApkBuilder 写入的版本（含 buildInfo）
+          cd assets
+          zip -u ../wework-collector.apk project/main.js project/config.js
+          find project/modules -name "*.js" -exec zip -u ../wework-collector.apk {} +
+          cd ..
+
+          # ===== 3. 删除旧签名 =====
           zip -d wework-collector.apk "META-INF/*" || true
 
-          # 4. 页面对齐（.so 文件必须 4KB 对齐）
-          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          # ===== 4. 页面对齐 =====
           ${BUILD_TOOLS}zipalign -p -f 4 wework-collector.apk wework-collector-aligned.apk
           mv wework-collector-aligned.apk wework-collector.apk
 
-          # 5. 从 Secrets 还原固定 keystore 并签名（确保每次构建签名一致，支持覆盖安装）
+          # ===== 5. 用固定 keystore 签名（支持覆盖安装） =====
           echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
           ${BUILD_TOOLS}apksigner sign \
             --ks release.keystore \
@@ -72,7 +86,7 @@ jobs:
             --key-pass "pass:$KEYSTORE_PASSWORD" \
             wework-collector.apk
 
-          echo "修复完成，使用固定 release keystore 签名"
+          echo "修复完成"
 
       - name: Verify APK
         run: |
@@ -90,14 +104,14 @@ jobs:
 
           ### 安装说明
           1. 下载 \`wework-collector.apk\` 安装到 Android 手机
-          2. 打开应用，授予**无障碍服务**权限
-          3. 填写源群名称和目标群名称
-          4. 点击「启动采集」
+          2. 授予**无障碍服务**权限和**悬浮窗**权限
+          3. 打开应用，点击[启动]，首次运行弹窗填写群信息
+          4. 配置自动保存，下次启动直接运行
 
           ### 前提条件
           - 企业微信已登录
           - 手机屏幕保持常亮
-          - 已授予无障碍服务权限
+          - 已授予无障碍服务权限和悬浮窗权限
 
           ### 更新日志
           - 自动构建版本 $TAG_NAME" \
