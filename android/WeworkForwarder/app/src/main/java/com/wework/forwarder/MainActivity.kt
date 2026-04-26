@@ -3,6 +3,7 @@ package com.wework.forwarder
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -135,6 +136,17 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        // 检查悬浮窗权限
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "请授予悬浮窗权限，以便在企微界面显示状态", Toast.LENGTH_LONG).show()
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+            return
+        }
+
         // 读取 UI 上的配置
         Config.sourceGroup = etSourceGroup.text.toString().trim()
         Config.targetGroups = etTargetGroups.text.toString().trim()
@@ -153,9 +165,13 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "请填写至少一个目标群", Toast.LENGTH_SHORT).show()
             return
         }
-        if (Config.targetGroups.size > 9) {
-            Toast.makeText(this, "目标群最多9个，当前 ${Config.targetGroups.size} 个", Toast.LENGTH_SHORT).show()
-            return
+
+        // 提示分批信息
+        if (Config.targetGroups.size > Config.BATCH_SIZE) {
+            val batches = (Config.targetGroups.size + Config.BATCH_SIZE - 1) / Config.BATCH_SIZE
+            Toast.makeText(this,
+                "${Config.targetGroups.size} 个目标群，将分 $batches 批转发",
+                Toast.LENGTH_SHORT).show()
         }
 
         // 保存配置

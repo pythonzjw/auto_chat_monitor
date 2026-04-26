@@ -18,9 +18,13 @@ object Config {
     const val SWIPE_DELAY = 1000L
     const val LONG_PRESS_DURATION = 600L
     const val PAGE_LOAD_TIMEOUT = 5000L
-    const val SEARCH_WAIT_DELAY = 1500L
+    const val SEARCH_WAIT_DELAY = 2500L
     const val RANDOM_DELAY_MAX = 500
     const val CLICK_OFFSET_MAX = 8
+
+    // ===== 转发配置 =====
+    /** 每批转发最多选多少个群（企微限制9个） */
+    const val BATCH_SIZE = 9
 
     // ===== 存储配置 =====
     const val DATA_DIR = "/sdcard/wework-collector/"
@@ -35,4 +39,8 @@ object Config {
 
     // ===== 调试 =====
     var debug: Boolean = true
+
+    // ===== UI 日志回调 =====
+    /** 所有模块统一用这个回调输出日志到 UI/悬浮窗 */
+    var uiLog: ((String) -> Unit)? = null
 }

@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
 import kotlin.coroutines.coroutineContext
@@ -16,6 +17,7 @@ import kotlinx.coroutines.*
  * 采集前台服务
  *
  * 主循环：轮询 → 检查新消息 → 转发 → 回到源群
+ * 同时管理悬浮窗生命周期
  */
 class CollectorService : Service() {
 
@@ -33,24 +35,42 @@ class CollectorService : Service() {
             isRunning = false
         }
 
-        // 日志回调，用于 UI 显示
+        // 日志回调，用于 Activity UI 显示
         var logCallback: ((String) -> Unit)? = null
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private lateinit var metrics: DisplayMetrics
+    private var floatingLog: FloatingLogView? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         metrics = resources.displayMetrics
+
+        // 创建悬浮窗（需要权限）
+        if (Settings.canDrawOverlays(this)) {
+            floatingLog = FloatingLogView(this)
+            floatingLog?.create()
+        } else {
+            Log.w(TAG, "没有悬浮窗权限，跳过创建悬浮窗")
+        }
+
+        // 设置全局 uiLog 回调：同时输出到 Activity + 悬浮窗
+        Config.uiLog = { msg ->
+            val line = "[${Storage.now()}] $msg"
+            Log.i(TAG, msg)
+            logCallback?.invoke(line)
+            floatingLog?.appendLog(msg)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         isRunning = true
+        floatingLog?.setStatus("running")
 
         serviceScope.launch {
             try {
@@ -59,6 +79,7 @@ class CollectorService : Service() {
                 throw e
             } catch (e: Exception) {
                 log("主线程异常: ${e.message}")
+                floatingLog?.setStatus("error")
             } finally {
                 isRunning = false
                 stopSelf()
@@ -72,6 +93,12 @@ class CollectorService : Service() {
         super.onDestroy()
         isRunning = false
         serviceScope.cancel()
+
+        // 销毁悬浮窗
+        floatingLog?.destroy()
+        floatingLog = null
+        Config.uiLog = null
+
         Log.i(TAG, "采集服务已停止")
     }
 
@@ -82,6 +109,7 @@ class CollectorService : Service() {
         val service = WeWorkAccessibilityService.instance
         if (service == null) {
             log("无障碍服务未启动！")
+            floatingLog?.setStatus("error")
             return
         }
 
@@ -99,6 +127,7 @@ class CollectorService : Service() {
         // 确保企业微信在前台
         if (!Navigator.ensureWeWorkForeground(service)) {
             log("无法启动企业微信，退出")
+            floatingLog?.setStatus("error")
             return
         }
 
@@ -106,6 +135,7 @@ class CollectorService : Service() {
         log("===== Phase 1: 进入源群 =====")
         if (!Navigator.enterGroup(service, metrics, Config.sourceGroup)) {
             log("无法进入源群: ${Config.sourceGroup}，退出")
+            floatingLog?.setStatus("error")
             return
         }
         log("已进入源群，等待 ${Config.enterGroupWaitSeconds} 秒...")
@@ -114,8 +144,10 @@ class CollectorService : Service() {
         // 检查是否有新消息需要转发
         if (MessageCollector.hasNewMessages(service)) {
             log("发现新消息，执行首次转发...")
+            floatingLog?.setStatus("running")
             val success = MessageForwarder.forwardNewMessages(service, metrics)
             log(if (success) "首次转发完成" else "首次转发失败，继续进入监控模式")
+            if (!success) floatingLog?.setStatus("error")
             Navigator.enterGroup(service, metrics, Config.sourceGroup)
             delay(Config.enterGroupWaitSeconds * 1000L)
         } else {
@@ -135,12 +167,15 @@ class CollectorService : Service() {
         while (isRunning && coroutineContext.isActive) {
             try {
                 // 等待轮询间隔
+                floatingLog?.setStatus("waiting")
                 log("等待 ${Config.pollIntervalSeconds} 秒后检查...")
                 for (w in 0 until Config.pollIntervalSeconds) {
                     if (!isRunning || !coroutineContext.isActive) return
                     delay(1000)
                 }
                 if (!isRunning || !coroutineContext.isActive) return
+
+                floatingLog?.setStatus("running")
 
                 // 确保企业微信在前台
                 if (!service.isInWeWork()) {
@@ -156,6 +191,7 @@ class CollectorService : Service() {
                     log("发现新消息，开始转发...")
                     val success = MessageForwarder.forwardNewMessages(service, metrics)
                     log(if (success) "转发完成" else "转发失败")
+                    if (!success) floatingLog?.setStatus("error")
                     Navigator.enterGroup(service, metrics, Config.sourceGroup)
                     delay(Config.enterGroupWaitSeconds * 1000L)
                 } else {
@@ -171,6 +207,7 @@ class CollectorService : Service() {
                 throw e
             } catch (e: Exception) {
                 consecutiveErrors++
+                floatingLog?.setStatus("error")
                 log("轮询异常 ($consecutiveErrors/$maxConsecutiveErrors): ${e.message}")
                 if (consecutiveErrors >= maxConsecutiveErrors) {
                     log("连续错误次数过多，停止运行")
@@ -198,6 +235,7 @@ class CollectorService : Service() {
         val line = "[${Storage.now()}] $msg"
         Log.i(TAG, msg)
         logCallback?.invoke(line)
+        floatingLog?.appendLog(msg)
     }
 
     private fun createNotificationChannel() {

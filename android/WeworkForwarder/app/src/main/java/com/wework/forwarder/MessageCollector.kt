@@ -14,13 +14,18 @@ import android.view.accessibility.AccessibilityNodeInfo
 object MessageCollector {
     private const val TAG = "Collector"
 
+    private fun log(msg: String) {
+        Log.d(TAG, msg)
+        Config.uiLog?.invoke(msg)
+    }
+
     /**
      * 采集当前屏幕上可见的所有消息
      */
     fun collectVisibleMessages(service: WeWorkAccessibilityService): List<Storage.Message> {
         val root = service.getRootNode()
         if (root == null) {
-            Log.w(TAG, "无法获取根节点")
+            log("[采集] 无法获取根节点")
             return emptyList()
         }
 
@@ -28,12 +33,12 @@ object MessageCollector {
         var messages = collectByStructure(root)
 
         if (messages.isEmpty()) {
-            Log.d(TAG, "控件结构采集失败，尝试文本节点采集...")
+            log("[采集] 控件结构采集失败，尝试文本节点采集...")
             // 策略2：直接采集所有文本节点
             messages = collectByTextNodes(root)
         }
 
-        Log.d(TAG, "屏幕可见 ${messages.size} 条消息")
+        if (Config.debug) log("[采集] 屏幕可见 ${messages.size} 条消息")
         return messages
     }
 
@@ -42,22 +47,22 @@ object MessageCollector {
      */
     fun hasNewMessages(service: WeWorkAccessibilityService): Boolean {
         val bookmark = Storage.getBookmark() ?: run {
-            Log.d(TAG, "没有书签记录，认为有新消息")
+            log("[采集] 没有书签记录，认为有新消息")
             return true
         }
 
         val messages = collectVisibleMessages(service)
         val lastMsg = messages.lastOrNull() ?: run {
-            Log.d(TAG, "无法读取屏幕消息")
+            log("[采集] 无法读取屏幕消息")
             return false
         }
 
         if (Storage.matchesBookmark(lastMsg.sender, lastMsg.content)) {
-            Log.d(TAG, "最后一条消息和书签一致，没有新消息")
+            if (Config.debug) Log.d(TAG, "最后一条消息和书签一致，没有新消息")
             return false
         }
 
-        Log.d(TAG, "发现新消息，最后一条: ${lastMsg.sender}: ${lastMsg.content}")
+        log("[采集] 发现新消息，最后一条: ${lastMsg.sender}: ${lastMsg.content.take(30)}")
         return true
     }
 
@@ -89,10 +94,10 @@ object MessageCollector {
         for (i in 0 until maxScrolls) {
             val result = findBookmarkOnScreen(service)
             if (result != null) return result
-            Log.d(TAG, "书签不在当前屏幕，继续向上滚动 (${i + 1}/$maxScrolls)")
+            if (Config.debug) Log.d(TAG, "书签不在当前屏幕，向上滚动 (${i + 1}/$maxScrolls)")
             GestureHelper.swipeUp(service, metrics)
         }
-        Log.w(TAG, "滚动 $maxScrolls 次仍未找到书签消息")
+        log("[采集] 滚动 $maxScrolls 次仍未找到书签")
         return null
     }
 
@@ -123,9 +128,15 @@ object MessageCollector {
 
         // 通过消息内容文本查找
         if (msg.content.isNotEmpty() && msg.content != "[图片]" && msg.content != "[文件]") {
-            NodeFinder.findByText(root, msg.content)?.let { return it }
+            NodeFinder.findByText(root, msg.content)?.let {
+                log("[采集] 通过消息内容定位到控件")
+                return it
+            }
             if (msg.content.length > 20) {
-                NodeFinder.findByTextContains(root, msg.content.take(20))?.let { return it }
+                NodeFinder.findByTextContains(root, msg.content.take(20))?.let {
+                    log("[采集] 通过消息内容（前20字）定位到控件")
+                    return it
+                }
             }
         }
 
@@ -138,11 +149,14 @@ object MessageCollector {
                     val texts = NodeFinder.getAllTexts(parent)
                     val contentNode = texts.firstOrNull { it.text != msg.sender }
                     if (contentNode != null) {
+                        log("[采集] 通过发送人定位到消息控件")
                         return NodeFinder.findByText(parent, contentNode.text)
                     }
                 }
             }
         }
+
+        log("[采集] ✗ 无法定位消息控件 (发送人=${msg.sender}, 内容=${msg.content.take(20)})")
         return null
     }
 
@@ -160,12 +174,12 @@ object MessageCollector {
             ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
             ?: NodeFinder.findByClassName(root, "android.widget.AbsListView")
         if (chatList == null) {
-            Log.d(TAG, "找不到聊天列表容器")
+            if (Config.debug) log("[采集] 找不到聊天列表容器(ListView/RecyclerView)")
             return messages
         }
 
         val childCount = chatList.childCount
-        Log.d(TAG, "聊天列表子节点数: $childCount")
+        if (Config.debug) Log.d(TAG, "聊天列表子节点数: $childCount")
 
         for (i in 0 until childCount) {
             val child = chatList.getChild(i) ?: continue
@@ -237,9 +251,12 @@ object MessageCollector {
     private fun collectByTextNodes(root: AccessibilityNodeInfo): List<Storage.Message> {
         val messages = mutableListOf<Storage.Message>()
         val allTextViews = NodeFinder.findAllByClassName(root, "android.widget.TextView")
-        if (allTextViews.isEmpty()) return messages
+        if (allTextViews.isEmpty()) {
+            log("[采集] 屏幕上没有任何 TextView")
+            return messages
+        }
 
-        Log.d(TAG, "屏幕上文本节点总数: ${allTextViews.size}")
+        if (Config.debug) Log.d(TAG, "屏幕上文本节点总数: ${allTextViews.size}")
 
         // 收集所有有文本的 TextView 及其坐标
         val textItems = allTextViews.mapNotNull { tv ->

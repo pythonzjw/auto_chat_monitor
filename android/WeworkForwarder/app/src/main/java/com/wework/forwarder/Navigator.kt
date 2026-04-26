@@ -14,11 +14,16 @@ import android.view.accessibility.AccessibilityNodeInfo
 object Navigator {
     private const val TAG = "Navigator"
 
+    private fun log(msg: String) {
+        Log.d(TAG, msg)
+        Config.uiLog?.invoke(msg)
+    }
+
     /**
      * 回到企业微信消息列表首页
      */
     fun goToMessageList(service: WeWorkAccessibilityService): Boolean {
-        Log.d(TAG, "正在返回消息列表...")
+        log("[导航] 返回消息列表...")
         for (i in 0 until 10) {
             val root = service.getRootNode()
             // 检查底部"消息"标签
@@ -26,7 +31,7 @@ object Navigator {
             if (msgTab != null) {
                 NodeFinder.clickNode(service, msgTab)
                 GestureHelper.delay()
-                Log.d(TAG, "已到达消息列表页面")
+                log("[导航] ✓ 已到达消息列表页面")
                 return true
             }
             // 没到，按返回键
@@ -35,7 +40,7 @@ object Navigator {
         }
 
         // 兜底：直接启动企业微信
-        Log.d(TAG, "无法返回消息列表，尝试重新启动企业微信")
+        log("[导航] 无法返回消息列表，重新启动企业微信")
         launchWeWork(service)
         GestureHelper.delayExact(3000)
 
@@ -46,7 +51,7 @@ object Navigator {
             return true
         }
 
-        Log.e(TAG, "返回消息列表失败")
+        log("[导航] ✗ 返回消息列表失败")
         return false
     }
 
@@ -54,7 +59,7 @@ object Navigator {
      * 从消息列表进入指定群聊
      */
     fun enterGroup(service: WeWorkAccessibilityService, metrics: DisplayMetrics, groupName: String): Boolean {
-        Log.d(TAG, "正在进入群聊: $groupName")
+        log("[导航] 进入群聊: $groupName")
 
         if (!goToMessageList(service)) return false
         GestureHelper.delay(500)
@@ -63,13 +68,13 @@ object Navigator {
         var group = findGroupInList(service, metrics, groupName)
         if (group != null) {
             NodeFinder.clickNode(service, group)
-            Log.d(TAG, "已点击进入群聊: $groupName")
+            log("[导航] ✓ 已点击进入群聊: $groupName")
             GestureHelper.delayExact(Config.enterGroupWaitSeconds * 1000L)
             return verifyInChatPage(service, groupName)
         }
 
         // 没找到，尝试搜索
-        Log.d(TAG, "列表中未找到群聊，尝试搜索: $groupName")
+        log("[导航] 列表中未找到，尝试搜索: $groupName")
         return searchAndEnterGroup(service, groupName)
     }
 
@@ -103,7 +108,7 @@ object Navigator {
             ?: NodeFinder.findByDesc(root, "搜索")
             ?: NodeFinder.findByText(root, "搜索")
         if (searchBox == null) {
-            Log.e(TAG, "找不到搜索入口")
+            log("[导航] ✗ 找不到搜索入口")
             return false
         }
         NodeFinder.clickNode(service, searchBox)
@@ -114,7 +119,7 @@ object Navigator {
             NodeFinder.findByClassName(r, "android.widget.EditText")
         }
         if (input == null) {
-            Log.e(TAG, "找不到搜索输入框")
+            log("[导航] ✗ 找不到搜索输入框")
             service.pressBack()
             return false
         }
@@ -124,8 +129,9 @@ object Navigator {
         // 查找搜索结果中的群名
         val resultRoot = service.getRootNode()
         val result = NodeFinder.findByText(resultRoot, groupName)
+            ?: NodeFinder.findByTextContains(resultRoot, groupName)
         if (result == null) {
-            Log.e(TAG, "搜索结果中未找到群聊: $groupName")
+            log("[导航] ✗ 搜索结果中未找到: $groupName")
             service.pressBack()
             service.pressBack()
             return false
@@ -141,12 +147,13 @@ object Navigator {
     private fun verifyInChatPage(service: WeWorkAccessibilityService, groupName: String): Boolean {
         val root = service.getRootNode()
         val titleCheck = NodeFinder.findByText(root, groupName)
+            ?: NodeFinder.findByTextContains(root, groupName)
         val inputCheck = NodeFinder.findByClassName(root, "android.widget.EditText")
         if (titleCheck != null || inputCheck != null) {
-            Log.d(TAG, "已确认进入群聊页面: $groupName")
+            log("[导航] ✓ 已确认进入群聊: $groupName")
             return true
         }
-        Log.e(TAG, "进入群聊验证失败: $groupName")
+        log("[导航] ✗ 进入群聊验证失败: $groupName")
         return false
     }
 
@@ -169,7 +176,7 @@ object Navigator {
      */
     fun ensureWeWorkForeground(service: WeWorkAccessibilityService): Boolean {
         if (service.isInWeWork()) return true
-        Log.d(TAG, "企业微信不在前台，正在启动...")
+        log("[导航] 企业微信不在前台，正在启动...")
         launchWeWork(service)
         GestureHelper.delayExact(3000)
         return service.isInWeWork()
