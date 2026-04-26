@@ -146,7 +146,7 @@ class FloatingLogView(private val context: Context) {
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.END  // 右上角
+            gravity = Gravity.TOP or Gravity.START  // 左上角，避免遮挡选群页面右上角的对勾按钮
             x = 0
             y = 0
         }
