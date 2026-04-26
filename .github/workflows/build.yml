@@ -89,9 +89,15 @@ jobs:
           APK_PATH="android/WeworkForwarder/app/build/outputs/apk/release/app-release.apk"
           cp "$APK_PATH" wework-forwarder.apk
 
-          gh release create "$TAG_NAME" \
-            --title "企微消息转发 $TAG_NAME" \
-            --notes "## 企微消息采集转发工具（原生 Android 版）
+          # 如果 release 已存在则只上传 APK，否则创建 release 并上传
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME 已存在，直接上传 APK"
+            # 删除已有的同名资产（如果有）
+            gh release upload "$TAG_NAME" wework-forwarder.apk --clobber
+          else
+            gh release create "$TAG_NAME" \
+              --title "企微消息转发 $TAG_NAME" \
+              --notes "## 企微消息采集转发工具（原生 Android 版）
 
           ### 安装说明
           1. 下载 \`wework-forwarder.apk\` 安装到 Android 手机
@@ -109,4 +115,5 @@ jobs:
           - 原生 Android 重构版本 $TAG_NAME
           - 标准 Gradle 构建，APK 约 5MB
           - AccessibilityService 直接读取控件树" \
-            wework-forwarder.apk
+              wework-forwarder.apk
+          fi
