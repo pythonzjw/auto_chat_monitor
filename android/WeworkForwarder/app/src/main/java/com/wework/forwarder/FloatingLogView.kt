@@ -43,6 +43,9 @@ class FloatingLogView(private val context: Context) {
     // 状态：running / waiting / error
     private var currentStatus = "waiting"
 
+    /** 点击"分析控件"按钮的回调 */
+    var onDumpClick: (() -> Unit)? = null
+
     @SuppressLint("ClickableViewAccessibility")
     fun create() {
         if (isAttached) return
@@ -79,6 +82,25 @@ class FloatingLogView(private val context: Context) {
             )
         }
         rootView.addView(logArea)
+
+        // 按钮行（展开时显示）
+        val btnRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            visibility = View.GONE
+            setPadding(0, dp(4), 0, 0)
+            tag = "btnRow"
+        }
+        val dumpBtn = TextView(context).apply {
+            text = "分析控件"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setBackgroundColor(0xFF336699.toInt())
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            setOnClickListener { onDumpClick?.invoke() }
+        }
+        btnRow.addView(dumpBtn)
+        rootView.addView(btnRow)
 
         // 点击切换展开/收起
         statusBar.setOnClickListener { toggleExpand() }
@@ -153,7 +175,10 @@ class FloatingLogView(private val context: Context) {
 
     private fun toggleExpand() {
         isExpanded = !isExpanded
-        logArea.visibility = if (isExpanded) View.VISIBLE else View.GONE
+        val vis = if (isExpanded) View.VISIBLE else View.GONE
+        logArea.visibility = vis
+        // 按钮行跟随展开/收起
+        rootView.findViewWithTag<View>("btnRow")?.visibility = vis
         // 更新布局
         if (isAttached) wm.updateViewLayout(rootView, params)
     }

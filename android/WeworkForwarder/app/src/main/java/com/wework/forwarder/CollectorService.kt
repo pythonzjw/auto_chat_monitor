@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.graphics.Rect
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
@@ -53,6 +54,36 @@ class CollectorService : Service() {
         if (Settings.canDrawOverlays(this)) {
             floatingLog = FloatingLogView(this)
             floatingLog?.create()
+            // "分析控件"按钮：dump 当前企微所有窗口的控件树
+            floatingLog?.onDumpClick = {
+                val service = WeWorkAccessibilityService.instance
+                if (service != null) {
+                    try {
+                        val roots = service.getAllRootNodes()
+                        val sb = StringBuilder()
+                        sb.appendLine("=== 手动 dump ===")
+                        sb.appendLine("Activity: ${service.currentActivity}")
+                        sb.appendLine("包名: ${service.currentPackage}")
+                        sb.appendLine("时间: ${Storage.now()}")
+                        sb.appendLine("屏幕: ${metrics.widthPixels}x${metrics.heightPixels}")
+                        sb.appendLine("窗口数: ${roots.size}")
+                        sb.appendLine("==============================")
+                        for ((i, root) in roots.withIndex()) {
+                            val rect = Rect()
+                            root.getBoundsInScreen(rect)
+                            sb.appendLine("--- 窗口 ${i + 1} (${rect.width()}x${rect.height()}) ---")
+                            sb.append(NodeFinder.dumpTree(root))
+                        }
+                        val filename = "dump_手动_${System.currentTimeMillis()}.txt"
+                        Storage.saveDump(filename, sb.toString())
+                        log("已保存: $filename")
+                    } catch (e: Exception) {
+                        log("dump 异常: ${e.message}")
+                    }
+                } else {
+                    log("无障碍服务未启动，无法 dump")
+                }
+            }
         } else {
             Log.w(TAG, "没有悬浮窗权限，跳过创建悬浮窗")
         }
