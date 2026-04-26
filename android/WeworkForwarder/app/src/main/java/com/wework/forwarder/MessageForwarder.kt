@@ -118,14 +118,14 @@ object MessageForwarder {
             service.longPressAt(rect.centerX().toFloat(), rect.centerY().toFloat())
             GestureHelper.delay(800)
 
-            // 步骤5：点击"多选"
+            // 步骤5：点击"多选"（在所有企微窗口中查找，包括弹出菜单）
             log("[转发] 步骤5: 查找'多选'...")
-            val multiSelectBtn = NodeFinder.waitForNode(service, 3000) { root ->
+            val multiSelectBtn = waitForNodeInAllWindows(service, 3000) { root ->
                 NodeFinder.findByText(root, "多选") ?: NodeFinder.findByDesc(root, "多选")
             }
             if (multiSelectBtn == null) {
                 log("[转发] ✗ 找不到'多选'按钮")
-                dumpOnFailure(service, "找不到多选_批${batchIdx + 1}")
+                dumpAllWindows(service, "找不到多选_批${batchIdx + 1}")
                 dismissPopup(service, metrics)
                 if (batchIdx == 0) return false else continue
             }
@@ -365,6 +365,55 @@ object MessageForwarder {
     private fun dismissPopup(service: WeWorkAccessibilityService, metrics: DisplayMetrics) {
         service.clickAt(metrics.widthPixels / 2f, metrics.heightPixels * 0.1f)
         GestureHelper.delay(500)
+    }
+
+    /**
+     * 在所有企微窗口中查找节点（包括弹出菜单/popup）
+     * 长按后弹出的菜单是独立 window，getRootNode() 可能拿不到
+     */
+    private fun waitForNodeInAllWindows(
+        service: WeWorkAccessibilityService,
+        timeout: Long,
+        finder: (AccessibilityNodeInfo) -> AccessibilityNodeInfo?
+    ): AccessibilityNodeInfo? {
+        val end = System.currentTimeMillis() + timeout
+        while (System.currentTimeMillis() < end) {
+            for (root in service.getAllRootNodes()) {
+                val node = finder(root)
+                if (node != null) return node
+            }
+            GestureHelper.delayExact(300)
+        }
+        return null
+    }
+
+    /**
+     * dump 所有企微窗口（诊断用）
+     */
+    private fun dumpAllWindows(service: WeWorkAccessibilityService, reason: String) {
+        try {
+            val roots = service.getAllRootNodes()
+            val sb = StringBuilder()
+            sb.appendLine("失败原因: $reason")
+            sb.appendLine("包名: ${service.currentPackage}")
+            sb.appendLine("Activity: ${service.currentActivity}")
+            sb.appendLine("时间: ${Storage.now()}")
+            sb.appendLine("窗口数: ${roots.size}")
+            sb.appendLine("==============================")
+            for ((i, root) in roots.withIndex()) {
+                val rect = Rect()
+                root.getBoundsInScreen(rect)
+                sb.appendLine("--- 窗口 ${i+1} (${rect.width()}x${rect.height()}) ---")
+                sb.append(NodeFinder.dumpTree(root))
+            }
+            val ts = System.currentTimeMillis()
+            val safeReason = reason.replace(Regex("[^a-zA-Z0-9_\u4e00-\u9fa5]"), "_")
+            val filename = "dump_${safeReason}_$ts.txt"
+            val path = Storage.saveDump(filename, sb.toString())
+            if (path != null) log("[诊断] 控件树已保存: $filename")
+        } catch (e: Exception) {
+            log("[诊断] dump 异常: ${e.message}")
+        }
     }
 
     private fun dumpOnFailure(service: WeWorkAccessibilityService, reason: String) {

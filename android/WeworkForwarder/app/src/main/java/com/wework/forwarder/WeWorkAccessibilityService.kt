@@ -75,17 +75,23 @@ class WeWorkAccessibilityService : AccessibilityService() {
      */
     fun getRootNode(): AccessibilityNodeInfo? {
         return try {
-            // 遍历所有窗口，找企微的窗口
+            // 遍历所有窗口，找企微的最大窗口（避免拿到 popup/弹出菜单）
+            var bestRoot: AccessibilityNodeInfo? = null
+            var bestArea = 0
             for (window in windows) {
                 val root = window.root ?: continue
                 if (root.packageName?.toString() == Config.WEWORK_PACKAGE) {
-                    return root
+                    val rect = Rect()
+                    root.getBoundsInScreen(rect)
+                    val area = rect.width() * rect.height()
+                    if (area > bestArea) {
+                        bestArea = area
+                        bestRoot = root
+                    }
                 }
             }
-            // 降级到 active window
-            rootInActiveWindow
+            bestRoot ?: rootInActiveWindow
         } catch (e: Exception) {
-            // windows 可能抛异常（API 级别不够等），降级
             try {
                 rootInActiveWindow
             } catch (e2: Exception) {
@@ -93,6 +99,28 @@ class WeWorkAccessibilityService : AccessibilityService() {
                 null
             }
         }
+    }
+
+    /**
+     * 获取所有企微窗口的根节点（包括 popup/弹出菜单）
+     * 用于在弹出菜单中查找按钮（如"多选"）
+     */
+    fun getAllRootNodes(): List<AccessibilityNodeInfo> {
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        try {
+            for (window in windows) {
+                val root = window.root ?: continue
+                if (root.packageName?.toString() == Config.WEWORK_PACKAGE) {
+                    roots.add(root)
+                }
+            }
+        } catch (e: Exception) {
+            // 降级
+            try {
+                rootInActiveWindow?.let { roots.add(it) }
+            } catch (_: Exception) {}
+        }
+        return roots
     }
 
     // ===== 手势操作 =====

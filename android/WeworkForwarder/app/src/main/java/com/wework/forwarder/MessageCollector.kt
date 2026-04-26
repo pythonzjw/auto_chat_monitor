@@ -213,20 +213,25 @@ object MessageCollector {
     /**
      * 解析 ListView 的一个子节点
      *
-     * 从真实 dump (v1.5.5) 分析的结构规律：
+     * 从真实 dump (v1.5.6 auto_dump_chat.txt) 分析的两种消息结构：
      *
-     * 1. 空占位/分隔线：高度极小（<30px），无子节点
-     * 2. 时间标签+系统消息（可能在同一个 child）：
-     *    - 无头像占位符（text=" " 的 TextView）
-     *    - 时间如 "0:29"、"13:12" 居中显示
-     *    - 系统消息如 "你邀请xxx加入了群聊" 居中显示
-     * 3. 普通消息：
-     *    - 有头像占位符 TextView(text=" ", bounds 约 37x37)
-     *    - 消息内容在 FrameLayout > TextView 中
-     *    - 我的消息：头像 centerX >= halfWidth（右侧）
-     *    - 别人的消息：头像 centerX < halfWidth（左侧）
-     *    - 别人消息的头像 bounds.left 很小（如 82），我的很大（如 660+）
-     * 4. 图片消息：有头像 + 大 ImageView + 无内容文本
+     * 【我的消息】
+     *   RelativeLayout (clickable)
+     *     └ RelativeLayout
+     *       ├ RelativeLayout > TextView text=" "  ← 头像占位符（右侧，left~660+）
+     *       └ LinearLayout > ... > FrameLayout > TextView text="内容 "
+     *       └ ImageView (已读标记，右侧 left=945)
+     *
+     * 【别人的消息】
+     *   RelativeLayout (clickable)
+     *     ├ [可选] LinearLayout (时间标签)
+     *     └ RelativeLayout
+     *       ├ ImageView bounds=[28,y,135,y2]  ← 真实头像（左侧，尺寸~107x107）
+     *       └ RelativeLayout
+     *         ├ ViewGroup > TextView text="发送人名"  ← 名字
+     *         └ RelativeLayout > ... > FrameLayout > TextView text="内容 "
+     *
+     * 【系统消息/时间标签】无头像，无左侧ImageView，文本居中
      */
     private fun parseListItem(node: AccessibilityNodeInfo, halfWidth: Int, currentTime: String): ParseResult {
         val rect = Rect()
@@ -238,7 +243,7 @@ object MessageCollector {
         // 收集所有文本节点（含坐标）
         val allTexts = NodeFinder.getAllTexts(node)
 
-        // 头像占位符：text 仅含空白且尺寸合理（30-120px）
+        // 我的消息的头像占位符：text=" "，尺寸合理，位于右侧
         val avatarPlaceholders = allTexts.filter {
             it.text.trim().isEmpty()
                     && it.bounds.width() in 20..150
@@ -246,60 +251,52 @@ object MessageCollector {
         }
         val contentTexts = allTexts.filter { it.text.trim().isNotEmpty() }
 
-        if (contentTexts.isEmpty()) {
-            // 没有文本内容，检查是否有图片
-            val hasLargeImage = findLargeImage(node, 150)
-            if (hasLargeImage && avatarPlaceholders.isNotEmpty()) {
-                val avatarX = avatarPlaceholders.first().bounds.centerX()
-                val sender = if (avatarX < halfWidth) "群成员" else "我"
-                return ParseResult.Msg(Storage.Message(sender = sender, time = currentTime, content = "[图片]", type = "image"))
-            }
-            return ParseResult.Skip
-        }
+        // 别人消息的头像：左侧的大 ImageView（bounds left < 200, 尺寸 80-150px）
+        val leftAvatarImage = findLeftAvatarImage(node)
 
-        // 没有头像占位符 → 时间标签 和/或 系统消息
-        if (avatarPlaceholders.isEmpty()) {
-            var foundTime: String? = null
-            var isSystem = false
-            for (tv in contentTexts) {
-                if (isTimeLabel(tv.text)) {
-                    foundTime = tv.text
-                } else if (isSystemMessage(tv.text)) {
-                    isSystem = true
-                }
-            }
-            // 如果有时间标签就返回 TimeLabel（即使同时有系统消息）
-            if (foundTime != null) return ParseResult.TimeLabel(foundTime)
-            // 纯系统消息 → 跳过
-            if (isSystem) return ParseResult.Skip
-            // 既不是时间也不是已知系统消息 → 也跳过（居中无头像的文本都是系统类）
-            return ParseResult.Skip
-        }
-
-        // 有头像 → 普通消息
-        val avatarX = avatarPlaceholders.first().bounds.centerX()
-        val isMe = avatarX >= halfWidth
+        // 判断消息类型
+        val hasMyAvatar = avatarPlaceholders.any { it.bounds.centerX() >= halfWidth }
+        val hasOtherAvatar = leftAvatarImage != null
+        val hasAvatar = hasMyAvatar || hasOtherAvatar
 
         // 从 FrameLayout > TextView 提取消息内容
         val msgContent = findMessageContent(node)
 
+        if (!hasAvatar) {
+            // 无头像 → 时间标签 和/或 系统消息
+            var foundTime: String? = null
+            var isSystem = false
+            for (tv in contentTexts) {
+                if (isTimeLabel(tv.text)) foundTime = tv.text
+                else if (isSystemMessage(tv.text)) isSystem = true
+            }
+            if (foundTime != null) return ParseResult.TimeLabel(foundTime)
+            if (isSystem) return ParseResult.Skip
+
+            // 可能是没有头像的图片消息（自己发的图片，头像占位符在左侧）
+            if (avatarPlaceholders.isNotEmpty() && contentTexts.isEmpty()) {
+                val hasLargeImage = findLargeImage(node, 150)
+                if (hasLargeImage) {
+                    val avatarX = avatarPlaceholders.first().bounds.centerX()
+                    val sender = if (avatarX < halfWidth) "群成员" else "我"
+                    return ParseResult.Msg(Storage.Message(sender = sender, time = currentTime, content = "[图片]", type = "image"))
+                }
+            }
+
+            // 既不是时间也不是已知系统消息 → 跳过
+            return ParseResult.Skip
+        }
+
+        // === 有头像 → 普通消息 ===
+        val isMe = hasMyAvatar && !hasOtherAvatar
+
         if (msgContent != null) {
             val content = msgContent.trimEnd()
-
-            // 别人的消息：检查是否有发送人名字（在消息气泡上方）
             var sender = if (isMe) "我" else "群成员"
+
+            // 别人的消息：从 ViewGroup > TextView 提取发送人名字
             if (!isMe) {
-                val msgContentRect = findMessageContentBounds(node)
-                for (tv in contentTexts) {
-                    if (tv.text == content || tv.text == "$content ") continue
-                    if (isTimeLabel(tv.text)) continue
-                    if (isSystemMessage(tv.text)) continue
-                    // 名字通常在内容上方
-                    if (msgContentRect != null && tv.bounds.bottom <= msgContentRect.top + 10) {
-                        sender = tv.text.trim()
-                        break
-                    }
-                }
+                sender = findSenderName(node, content) ?: "群成员"
             }
 
             val type = when {
@@ -309,7 +306,7 @@ object MessageCollector {
             return ParseResult.Msg(Storage.Message(sender = sender, time = currentTime, content = content, type = type))
         }
 
-        // 有头像但没有文本内容 → 可能是图片/文件消息
+        // 有头像但没有文本内容 → 图片/文件消息
         val hasLargeImage = findLargeImage(node, 150)
         if (hasLargeImage) {
             val sender = if (isMe) "我" else "群成员"
@@ -317,6 +314,47 @@ object MessageCollector {
         }
 
         return ParseResult.Skip
+    }
+
+    /**
+     * 查找别人消息的头像 ImageView（左侧，尺寸 80-150px）
+     * 别人的头像特征：bounds.left < 200, 宽高在 80-150 范围
+     */
+    private fun findLeftAvatarImage(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val images = NodeFinder.findAllByClassName(node, "android.widget.ImageView")
+        for (img in images) {
+            val r = Rect()
+            img.getBoundsInScreen(r)
+            // 左侧头像：left < 200, 尺寸约 107x107
+            if (r.left < 200 && r.width() in 70..180 && r.height() in 70..180) {
+                return img
+            }
+        }
+        return null
+    }
+
+    /**
+     * 从 ViewGroup > TextView 提取发送人名字
+     * 别人的消息结构中，名字在 ViewGroup 下的 TextView 里
+     */
+    private fun findSenderName(node: AccessibilityNodeInfo, msgContent: String): String? {
+        val viewGroups = NodeFinder.findAllByClassName(node, "android.view.ViewGroup")
+        for (vg in viewGroups) {
+            for (i in 0 until vg.childCount) {
+                val child = vg.getChild(i) ?: continue
+                if (child.className?.toString() == "android.widget.TextView") {
+                    val text = child.text?.toString()?.trim()
+                    if (!text.isNullOrEmpty()
+                        && text != msgContent
+                        && text != "$msgContent "
+                        && !isTimeLabel(text)
+                        && !isSystemMessage(text)) {
+                        return text
+                    }
+                }
+            }
+        }
+        return null
     }
 
     /**
