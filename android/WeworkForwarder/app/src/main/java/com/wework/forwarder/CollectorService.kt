@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.DisplayMetrics
 import android.util.Log
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.*
 
 /**
@@ -131,15 +132,15 @@ class CollectorService : Service() {
         var consecutiveErrors = 0
         val maxConsecutiveErrors = 10
 
-        while (isRunning && isActive) {
+        while (isRunning && coroutineContext.isActive) {
             try {
                 // 等待轮询间隔
                 log("等待 ${Config.pollIntervalSeconds} 秒后检查...")
                 for (w in 0 until Config.pollIntervalSeconds) {
-                    if (!isRunning || !isActive) return
+                    if (!isRunning || !coroutineContext.isActive) return
                     delay(1000)
                 }
-                if (!isRunning || !isActive) return
+                if (!isRunning || !coroutineContext.isActive) return
 
                 // 确保企业微信在前台
                 if (!service.isInWeWork()) {

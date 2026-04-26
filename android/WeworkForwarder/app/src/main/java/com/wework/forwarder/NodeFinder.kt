@@ -140,7 +140,8 @@ object NodeFinder {
     ): AccessibilityNodeInfo? {
         val end = System.currentTimeMillis() + timeout
         while (System.currentTimeMillis() < end) {
-            val root = service.getRootNode() ?: run {
+            val root = service.getRootNode()
+            if (root == null) {
                 GestureHelper.delayExact(300)
                 continue
             }
