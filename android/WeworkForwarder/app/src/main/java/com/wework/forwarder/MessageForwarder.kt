@@ -391,13 +391,14 @@ object MessageForwarder {
                 }
 
                 if (result != null) {
-                    // 用坐标点击（不走 clickNode 冒泡，避免点到页面容器）
+                    // 多选模式：点击左侧 ImageView 勾选框（x≈83），y 取群名行的中心
+                    // dump 实证：ImageView bounds=[45,392,121,482]，centerX=83
                     val rect = Rect()
                     result.getBoundsInScreen(rect)
-                    service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+                    service.clickAt(83f, rect.centerY().toFloat())
                     selectedCount++
                     found = true
-                    log("[选群] ✓ 已勾选: $groupName (${rect.centerX()}, ${rect.centerY()})")
+                    log("[选群] ✓ 已勾选: $groupName (83, ${rect.centerY()})")
                     GestureHelper.delay(500)
                     break
                 }
@@ -423,36 +424,61 @@ object MessageForwarder {
         }
 
         log("[选群] 共勾选 $selectedCount/${groups.size}")
+
+        // 点击底部"确定(N)"按钮，进入发送确认弹窗
+        if (selectedCount > 0) {
+            GestureHelper.delay(500)
+            val confirmRoot = service.getRootNode()
+            val confirmBtn = NodeFinder.findByTextRegex(confirmRoot, Regex("确定\\s*\\(\\d+\\)"))
+                ?: NodeFinder.findByText(confirmRoot, "确定")
+            if (confirmBtn != null) {
+                val cRect = Rect()
+                confirmBtn.getBoundsInScreen(cRect)
+                log("[选群] 点击: ${confirmBtn.text} (${cRect.centerX()}, ${cRect.centerY()})")
+                service.clickAt(cRect.centerX().toFloat(), cRect.centerY().toFloat())
+                GestureHelper.delay(1500)
+            } else {
+                log("[选群] ✗ 找不到确定按钮")
+                return false
+            }
+        }
+
         return selectedCount > 0
     }
 
     /**
-     * 点击右上角对勾按钮，切换到多选模式
+     * 切换到多选模式
      *
-     * 策略：标题栏第一行右侧有 2 个 clickable 按钮（对勾、搜索），
-     * 通过严格 y 范围过滤排除 tab 按钮，逐个尝试点击并验证。
+     * 单选 vs 多选的确定性区别（dump 实证）：
+     *   单选模式 tab: "最近聊天" + "创建聊天" + "转到微信"
+     *   多选模式 tab: "最近聊天" + "从通讯录选择"
      *
-     * 关键改动（v1.6.1）：
-     *   - 收紧 y 范围 [80,260]，排除 tab 按钮（y≈286-338）
-     *   - 不盲目 pressBack（会退出选群页面）：只在页面确实变了才 back
-     *   - 放宽验证：除"确定"外也检查 CheckBox；仅 2 个候选且页面没变即视为成功
-     *   - 排序改为 left 升序（对勾在搜索左边，先试更可能的）
+     * 策略：
+     *   1. 先检查是否已在多选模式（"从通讯录选择"存在）
+     *   2. 如不在，点右上角对勾按钮 bounds=[810,112,945,247]
+     *   3. 验证："从通讯录选择"出现 或 "创建聊天"消失
      */
     private fun switchToMultiSelect(service: WeWorkAccessibilityService): Boolean {
         val root = service.getRootNode() ?: return false
+
+        // 已经在多选模式
+        if (NodeFinder.findByText(root, "从通讯录选择") != null) {
+            log("[选群] 已在多选模式（找到'从通讯录选择'）")
+            return true
+        }
+
         val metrics = service.resources.displayMetrics
         val halfWidth = metrics.widthPixels / 2
 
-        // 严格过滤：只取标题栏第一行按钮（dump 确认 y=[112,247]）
-        // 排除 tab 按钮（y=[286,338]）和大容器
+        // 查找标题栏右侧按钮（y=[80,260]，右半边，排除大容器）
         val clickables = NodeFinder.findAll(root) { node ->
             if (!node.isClickable) return@findAll false
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            rect.top >= 80 && rect.bottom <= 260  // 严格标题栏区域
-                    && rect.left > halfWidth       // 右半边
-                    && rect.width() < 200          // 排除大容器
-                    && rect.height() < 200         // 排除大容器
+            rect.top >= 80 && rect.bottom <= 260
+                    && rect.left > halfWidth
+                    && rect.width() < 200
+                    && rect.height() < 200
         }
 
         if (clickables.isEmpty()) {
@@ -460,7 +486,7 @@ object MessageForwarder {
             return false
         }
 
-        // 按 bounds.left 升序（从左到右，对勾通常在搜索左边）
+        // 按 left 升序（对勾在搜索左边）
         val sorted = clickables.sortedBy { node ->
             val rect = Rect()
             node.getBoundsInScreen(rect)
@@ -470,26 +496,22 @@ object MessageForwarder {
         for ((idx, btn) in sorted.withIndex()) {
             val rect = Rect()
             btn.getBoundsInScreen(rect)
-            log("[选群] 尝试按钮 ${idx + 1}/${sorted.size} (${rect.centerX()}, ${rect.centerY()}) bounds=[${rect.left},${rect.top},${rect.right},${rect.bottom}]")
+            log("[选群] 尝试按钮 ${idx + 1}/${sorted.size} (${rect.centerX()}, ${rect.centerY()})")
             service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
             GestureHelper.delay(800)
 
             val checkRoot = service.getRootNode() ?: continue
 
-            // 验证方式1：找"确定"按钮（有勾选时显示）
-            val confirmBtn = NodeFinder.findByText(checkRoot, "确定")
-                ?: NodeFinder.findByTextRegex(checkRoot, Regex("确定\\s*\\(\\d+\\)"))
-            if (confirmBtn != null) {
-                log("[选群] ✓ 多选模式已激活（找到确定按钮）")
+            // 验证：出现"从通讯录选择" = 成功
+            if (NodeFinder.findByText(checkRoot, "从通讯录选择") != null) {
+                log("[选群] ✓ 多选模式已激活（找到'从通讯录选择'）")
                 return true
             }
 
-            // 验证方式2：检查是否出现 CheckBox 类控件
-            val hasCheckbox = NodeFinder.findAll(checkRoot) { node ->
-                node.className?.toString()?.contains("CheckBox") == true
-            }.isNotEmpty()
-            if (hasCheckbox) {
-                log("[选群] ✓ 多选模式已激活（找到 CheckBox）")
+            // 验证："创建聊天"消失也说明切换成功
+            if (NodeFinder.findByText(checkRoot, "创建聊天") == null
+                && NodeFinder.findByText(checkRoot, "最近聊天") != null) {
+                log("[选群] ✓ 多选模式已激活（'创建聊天'已消失）")
                 return true
             }
 
@@ -497,17 +519,10 @@ object MessageForwarder {
             val stillOnPage = NodeFinder.findByText(checkRoot, "最近聊天")
                 ?: NodeFinder.findByText(checkRoot, "选择联系人")
             if (stillOnPage == null) {
-                // 页面变了（可能打开了搜索），pressBack 恢复
                 log("[选群] 按钮 ${idx + 1} 导致离开选群页面，pressBack 恢复")
                 service.pressBack()
                 GestureHelper.delay(500)
             } else {
-                // 还在选群页面，可能已切换但没勾选所以"确定"未显示
-                // 标题栏最多 2 个按钮（对勾+搜索），点了还在页面就是对勾
-                if (sorted.size <= 2) {
-                    log("[选群] ✓ 假定多选模式已激活（仅 ${sorted.size} 个候选，页面未变化）")
-                    return true
-                }
                 log("[选群] 按钮 ${idx + 1} 点击后仍在选群页面，继续尝试下一个")
             }
         }
@@ -517,36 +532,30 @@ object MessageForwarder {
     }
 
     /**
-     * 点击右下角蓝色"确定"按钮完成发送
+     * 处理 ForwardDialogUtil 发送确认弹窗
+     *
+     * 此时"确定(N)"已由 selectTargetGroups() 点击完成，
+     * 这里只处理弹窗中的"发送(N)"按钮。
+     *
+     * dump 实证：text="发送(5)" bounds=[681,1478,900,1579] clickable
      */
     private fun confirmSend(service: WeWorkAccessibilityService): Boolean {
         GestureHelper.delay(800)
 
-        // 找"确定"相关按钮（多选模式下通常在右下角）
         val root = service.getRootNode()
-        val sendBtn = NodeFinder.findByTextRegex(root, Regex("确定\\s*\\(\\d+\\)"))
-            ?: NodeFinder.findByTextRegex(root, Regex("发送\\s*\\(\\d+\\)"))
-            ?: NodeFinder.findByText(root, "确定")
+        val sendBtn = NodeFinder.findByTextRegex(root, Regex("发送\\s*\\(\\d+\\)"))
             ?: NodeFinder.findByText(root, "发送")
+            ?: NodeFinder.findByText(root, "确定")
             ?: NodeFinder.findByText(root, "确认")
         if (sendBtn == null) {
-            log("[转发] 找不到确定/发送按钮")
+            log("[转发] 找不到发送按钮")
             return false
         }
-        log("[转发] 点击: ${sendBtn.text}")
-        NodeFinder.clickNode(service, sendBtn)
-        GestureHelper.delayExact(1500)
-
-        // 可能有二次确认弹窗（如"确认发送给N个群聊？"）
-        val newRoot = service.getRootNode()
-        val confirmAgain = NodeFinder.findByText(newRoot, "发送")
-            ?: NodeFinder.findByText(newRoot, "确定")
-            ?: NodeFinder.findByText(newRoot, "确认")
-        if (confirmAgain != null) {
-            log("[转发] 二次确认: ${confirmAgain.text}")
-            NodeFinder.clickNode(service, confirmAgain)
-            GestureHelper.delay(1000)
-        }
+        val rect = Rect()
+        sendBtn.getBoundsInScreen(rect)
+        log("[转发] 点击: ${sendBtn.text} (${rect.centerX()}, ${rect.centerY()})")
+        service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+        GestureHelper.delayExact(2000)
         return true
     }
 
