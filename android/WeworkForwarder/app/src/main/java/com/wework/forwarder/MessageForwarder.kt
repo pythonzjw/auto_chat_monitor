@@ -195,9 +195,13 @@ object MessageForwarder {
     }
 
     private fun scrollUpForMinutes(service: WeWorkAccessibilityService, metrics: DisplayMetrics, minutes: Int) {
+        var lastFirstContent = ""
+        var sameCount = 0
         for (i in 0 until 50) {
             if (stopped()) return
             val messages = MessageCollector.collectVisibleMessages(service)
+
+            // 检查是否到达回溯时间边界
             for (msg in messages) {
                 val msgTime = TimeParser.parseMessageTime(msg.time)
                 if (msgTime != null && !TimeParser.isWithinLookback(msgTime, minutes)) {
@@ -205,6 +209,20 @@ object MessageForwarder {
                     return
                 }
             }
+
+            // 检查是否到顶（连续 3 次内容不变 → 不再滑动）
+            val firstContent = messages.firstOrNull()?.content ?: ""
+            if (firstContent == lastFirstContent && firstContent.isNotEmpty()) {
+                sameCount++
+                if (sameCount >= 3) {
+                    log("[转发] 已到达消息列表顶部，停止回溯")
+                    return
+                }
+            } else {
+                sameCount = 0
+                lastFirstContent = firstContent
+            }
+
             GestureHelper.swipeUp(service, metrics)
             // 安全检查：滑动后确认还在聊天页面
             if (!MessageCollector.isChatPageVisible(service)) {

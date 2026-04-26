@@ -41,7 +41,7 @@ object MessageCollector {
         var messages = collectByStructure(root, screenWidth)
 
         if (messages.isEmpty()) {
-            if (Config.debug) log("[采集] 策略1失败，尝试策略2...")
+            log("[采集] 控件结构采集失败，尝试文本节点采集...")
             val screenHeight = service.resources.displayMetrics.heightPixels
             messages = collectByTextNodes(root, screenWidth, screenHeight)
         }
@@ -187,7 +187,8 @@ object MessageCollector {
 
         val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
         if (chatList == null) {
-            log("[策略1] 找不到 ListView，根节点包名=${root.packageName}, class=${root.className}")
+            // 始终打印，便于诊断为什么策略1失败
+            log("[策略1] 找不到 ListView，根包名=${root.packageName}, class=${root.className}")
             return messages
         }
 
@@ -212,10 +213,20 @@ object MessageCollector {
     /**
      * 解析 ListView 的一个子节点
      *
-     * 从 dump 分析的结构规律：
-     * - 头像占位符：TextView(text=" ", clickable)，固定尺寸约 65x62
-     * - 消息内容：在 FrameLayout > TextView 中
-     * - 系统消息/时间：居中文本，无头像
+     * 从真实 dump (v1.5.5) 分析的结构规律：
+     *
+     * 1. 空占位/分隔线：高度极小（<30px），无子节点
+     * 2. 时间标签+系统消息（可能在同一个 child）：
+     *    - 无头像占位符（text=" " 的 TextView）
+     *    - 时间如 "0:29"、"13:12" 居中显示
+     *    - 系统消息如 "你邀请xxx加入了群聊" 居中显示
+     * 3. 普通消息：
+     *    - 有头像占位符 TextView(text=" ", bounds 约 37x37)
+     *    - 消息内容在 FrameLayout > TextView 中
+     *    - 我的消息：头像 centerX >= halfWidth（右侧）
+     *    - 别人的消息：头像 centerX < halfWidth（左侧）
+     *    - 别人消息的头像 bounds.left 很小（如 82），我的很大（如 660+）
+     * 4. 图片消息：有头像 + 大 ImageView + 无内容文本
      */
     private fun parseListItem(node: AccessibilityNodeInfo, halfWidth: Int, currentTime: String): ParseResult {
         val rect = Rect()
@@ -227,15 +238,18 @@ object MessageCollector {
         // 收集所有文本节点（含坐标）
         val allTexts = NodeFinder.getAllTexts(node)
 
-        // 过滤掉头像占位符（text=" "）并记录头像位置
-        val avatarPlaceholders = allTexts.filter { it.text.trim().isEmpty() }
+        // 头像占位符：text 仅含空白且尺寸合理（30-120px）
+        val avatarPlaceholders = allTexts.filter {
+            it.text.trim().isEmpty()
+                    && it.bounds.width() in 20..150
+                    && it.bounds.height() in 20..150
+        }
         val contentTexts = allTexts.filter { it.text.trim().isNotEmpty() }
 
         if (contentTexts.isEmpty()) {
             // 没有文本内容，检查是否有图片
             val hasLargeImage = findLargeImage(node, 150)
             if (hasLargeImage && avatarPlaceholders.isNotEmpty()) {
-                // 有头像+大图 → 图片消息
                 val avatarX = avatarPlaceholders.first().bounds.centerX()
                 val sender = if (avatarX < halfWidth) "群成员" else "我"
                 return ParseResult.Msg(Storage.Message(sender = sender, time = currentTime, content = "[图片]", type = "image"))
@@ -243,13 +257,22 @@ object MessageCollector {
             return ParseResult.Skip
         }
 
-        // 没有头像占位符 → 时间标签或系统消息
+        // 没有头像占位符 → 时间标签 和/或 系统消息
         if (avatarPlaceholders.isEmpty()) {
-            // 检查是否是时间标签
+            var foundTime: String? = null
+            var isSystem = false
             for (tv in contentTexts) {
-                if (isTimeLabel(tv.text)) return ParseResult.TimeLabel(tv.text)
+                if (isTimeLabel(tv.text)) {
+                    foundTime = tv.text
+                } else if (isSystemMessage(tv.text)) {
+                    isSystem = true
+                }
             }
-            // 剩余的是系统消息（居中文本），跳过
+            // 如果有时间标签就返回 TimeLabel（即使同时有系统消息）
+            if (foundTime != null) return ParseResult.TimeLabel(foundTime)
+            // 纯系统消息 → 跳过
+            if (isSystem) return ParseResult.Skip
+            // 既不是时间也不是已知系统消息 → 也跳过（居中无头像的文本都是系统类）
             return ParseResult.Skip
         }
 
@@ -261,22 +284,19 @@ object MessageCollector {
         val msgContent = findMessageContent(node)
 
         if (msgContent != null) {
-            // 去除末尾空格
             val content = msgContent.trimEnd()
 
             // 别人的消息：检查是否有发送人名字（在消息气泡上方）
             var sender = if (isMe) "我" else "群成员"
             if (!isMe) {
-                // 在消息节点中查找名字 TextView：
-                // 名字特征：文本不是消息内容、不是空格、不是时间标签、
-                // 位置在消息气泡上方、x 坐标偏左
+                val msgContentRect = findMessageContentBounds(node)
                 for (tv in contentTexts) {
                     if (tv.text == content || tv.text == "$content ") continue
                     if (isTimeLabel(tv.text)) continue
+                    if (isSystemMessage(tv.text)) continue
                     // 名字通常在内容上方
-                    val msgContentRect = findMessageContentBounds(node)
                     if (msgContentRect != null && tv.bounds.bottom <= msgContentRect.top + 10) {
-                        sender = tv.text
+                        sender = tv.text.trim()
                         break
                     }
                 }
@@ -365,12 +385,14 @@ object MessageCollector {
         val yMax = (screenHeight * 0.88).toInt()
         val halfWidth = screenWidth / 2
 
+        // 收集聊天区域内的文本节点，排除时间/系统消息/UI元素
         val textItems = allTextViews.mapNotNull { tv ->
             val text = tv.text?.toString()?.trim() ?: return@mapNotNull null
             if (text.isEmpty()) return@mapNotNull null
             val rect = Rect()
             tv.getBoundsInScreen(rect)
             if (rect.centerY() < yMin || rect.centerY() > yMax) return@mapNotNull null
+            if (rect.width() < 10 || rect.height() < 10) return@mapNotNull null
             if (isTimeLabel(text)) return@mapNotNull null
             if (isSystemMessage(text)) return@mapNotNull null
             if (isUiElement(text)) return@mapNotNull null
@@ -414,9 +436,20 @@ object MessageCollector {
     }
 
     private fun isSystemMessage(text: String): Boolean {
-        // 注意：关键词必须足够具体，避免误匹配用户名（如用户名叫"拒绝"）
-        val keywords = listOf("加入了群聊", "退出了群聊", "移出了群聊", "修改群名",
-            "撤回了一条消息", "你已被", "邀请了")
+        // 注意：关键词必须足够具体，避免误匹配用户消息
+        // 从真实 dump 中确认的系统消息格式：
+        // - "你邀请拒绝、Yummy加入了群聊"
+        // - "你将Yummy移出了群聊"
+        // - "你修改群名为\"采集群\""
+        val keywords = listOf(
+            "加入了群聊", "退出了群聊", "移出了群聊",
+            "修改群名为", "修改群名",
+            "撤回了一条消息", "你已被",
+            "你邀请", "邀请你加入",
+            "创建了群聊", "解散了群聊",
+            "开启了群公告", "清除了群公告",
+            "成为新群主", "设置为管理员", "移除了管理员"
+        )
         return keywords.any { text.contains(it) }
     }
 
