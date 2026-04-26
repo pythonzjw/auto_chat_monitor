@@ -245,8 +245,8 @@ object MessageForwarder {
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
         for (i in 0 until 10) {
             if (stopped()) return false
-            GestureHelper.swipeDown(service, metrics)
 
+            // 先检查"选择到这里"是否已经可见（避免不必要的滑动把按钮滑走）
             val btn = findSelectToHereDown(service)
             if (btn != null) {
                 val rect = Rect()
@@ -256,16 +256,9 @@ object MessageForwarder {
                 GestureHelper.delay(1000)
                 return true
             }
-        }
 
-        // 最后再检查一次（可能滑到底了按钮才出现）
-        val btn = findSelectToHereDown(service)
-        if (btn != null) {
-            val rect = Rect()
-            btn.getBoundsInScreen(rect)
-            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-            GestureHelper.delay(1000)
-            return true
+            // 没找到 → 向下滑动，让更多消息出现
+            GestureHelper.swipeDown(service, metrics)
         }
 
         log("[转发] 未找到'选择到这里'，可能只有一条新消息")
@@ -335,11 +328,16 @@ object MessageForwarder {
         NodeFinder.clickNode(service, forwardBtn)
         GestureHelper.delay(1000)
 
-        val newRoot = service.getRootNode()
-        val oneByOne = NodeFinder.findByText(newRoot, "逐条转发")
+        // "逐条转发/合并转发"弹窗是独立窗口（CustomerBottomListDialog），
+        // getRootNode() 取最大窗口会跳过它，必须用 getAllRootNodes 在所有窗口中查找
+        val oneByOne = waitForNodeInAllWindows(service, 3000) { r ->
+            NodeFinder.findByText(r, "逐条转发")
+        }
         if (oneByOne != null) {
-            log("[转发] 选择'逐条转发'")
-            NodeFinder.clickNode(service, oneByOne)
+            val rect = Rect()
+            oneByOne.getBoundsInScreen(rect)
+            log("[转发] 选择'逐条转发' (${rect.centerX()}, ${rect.centerY()})")
+            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
             GestureHelper.delay(1500)
         }
         return true

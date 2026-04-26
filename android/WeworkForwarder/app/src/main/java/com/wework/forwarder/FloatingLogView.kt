@@ -199,6 +199,29 @@ class FloatingLogView(private val context: Context) {
         handler.post { updateButtonState() }
     }
 
+    /**
+     * 控制悬浮窗是否接收触摸事件
+     *
+     * 任务运行时设为 false：加 FLAG_NOT_TOUCHABLE，让 dispatchGesture 的触摸事件
+     * 穿透悬浮窗到达下层企微控件（避免悬浮窗挡住对勾、群勾选等按钮）。
+     * 任务停止后设为 true：恢复可触摸，用户可以点击按钮。
+     */
+    fun setTouchable(touchable: Boolean) {
+        if (!isAttached) return
+        handler.post {
+            if (touchable) {
+                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            } else {
+                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            }
+            try {
+                wm.updateViewLayout(rootView, params)
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun updateButtonState() {
         val isActive = currentStatus == "running" || currentStatus == "waiting"
         startBtn.alpha = if (isActive) 0.4f else 1.0f

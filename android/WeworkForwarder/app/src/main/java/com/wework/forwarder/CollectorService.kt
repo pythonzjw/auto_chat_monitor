@@ -89,6 +89,8 @@ class CollectorService : Service() {
             } else {
                 isRunning = true
                 floatingLog?.setStatus("running")
+                // 任务运行时悬浮窗不接收触摸，避免挡住 dispatchGesture 的坐标点击
+                floatingLog?.setTouchable(false)
                 log("用户点击开始采集")
                 collectorJob = serviceScope.launch {
                     try {
@@ -101,6 +103,8 @@ class CollectorService : Service() {
                     } finally {
                         isRunning = false
                         floatingLog?.setStatus("stopped")
+                        // 任务结束后恢复悬浮窗可触摸
+                        floatingLog?.setTouchable(true)
                         log("采集已停止")
                     }
                 }
@@ -113,6 +117,8 @@ class CollectorService : Service() {
                 isRunning = false
                 log("用户点击停止采集")
                 floatingLog?.setStatus("stopped")
+                // 恢复悬浮窗可触摸
+                floatingLog?.setTouchable(true)
             } else {
                 log("当前未在运行")
             }
