@@ -14,6 +14,11 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
+import java.io.File
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 /**
  * 主界面
@@ -31,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStart: Button
     private lateinit var btnStop: Button
     private lateinit var btnDump: Button
+    private lateinit var btnExport: Button
     private lateinit var tvLog: TextView
     private lateinit var scrollLog: ScrollView
 
@@ -63,6 +69,7 @@ class MainActivity : AppCompatActivity() {
         btnStart = findViewById(R.id.btn_start)
         btnStop = findViewById(R.id.btn_stop)
         btnDump = findViewById(R.id.btn_dump)
+        btnExport = findViewById(R.id.btn_export)
         tvLog = findViewById(R.id.tv_log)
         scrollLog = findViewById(R.id.scroll_log)
     }
@@ -83,6 +90,7 @@ class MainActivity : AppCompatActivity() {
         btnStart.setOnClickListener { startCollector() }
         btnStop.setOnClickListener { stopCollector() }
         btnDump.setOnClickListener { dumpUiTree() }
+        btnExport.setOnClickListener { exportFiles() }
     }
 
     private fun setupLogCallback() {
@@ -257,6 +265,53 @@ class MainActivity : AppCompatActivity() {
         val lines = dump.split("\n")
         val preview = if (lines.size > 100) lines.take(100).joinToString("\n") + "\n... (共${lines.size}行)" else dump
         appendLog(preview)
+    }
+
+    /**
+     * 导出所有数据文件：打包为 zip 并通过系统分享发出
+     * 无需额外存储权限，可以直接发微信/保存到文件等
+     */
+    private fun exportFiles() {
+        val srcDir = Storage.getDataDir()
+        if (srcDir == null || !srcDir.exists()) {
+            Toast.makeText(this, "没有数据可导出", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val files = srcDir.listFiles()?.filter { it.isFile } ?: emptyList()
+        if (files.isEmpty()) {
+            Toast.makeText(this, "没有数据文件", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        try {
+            // 打包为 zip（存到 cache 目录，FileProvider 可以访问）
+            val zipFile = File(cacheDir, "wework-collector-export.zip")
+            ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
+                for (file in files) {
+                    zos.putNextEntry(ZipEntry(file.name))
+                    file.inputStream().use { it.copyTo(zos) }
+                    zos.closeEntry()
+                }
+            }
+
+            // 通过 FileProvider 生成 content:// URI
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", zipFile)
+
+            // 发起分享
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, "企微转发日志导出")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(shareIntent, "导出日志文件"))
+
+            appendLog("已打包 ${files.size} 个文件，请选择分享方式")
+        } catch (e: Exception) {
+            appendLog("导出失败: ${e.message}")
+            Toast.makeText(this, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun appendLog(msg: String) {

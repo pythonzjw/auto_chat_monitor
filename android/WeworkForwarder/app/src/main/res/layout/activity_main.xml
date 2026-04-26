@@ -86,7 +86,7 @@
             android:layout_weight="1"
             android:textSize="14sp"
             android:inputType="text"
-            android:hint="多个群用逗号分隔，最多9个"
+            android:hint="多个群用逗号分隔"
             android:singleLine="true" />
     </LinearLayout>
 
@@ -165,6 +165,14 @@
             android:text="分析控件"
             android:layout_marginStart="16dp"
             android:backgroundTint="#FF9800" />
+
+        <Button
+            android:id="@+id/btn_export"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="导出"
+            android:layout_marginStart="16dp"
+            android:backgroundTint="#43A047" />
     </LinearLayout>
 
     <!-- 日志区域 -->
@@ -190,7 +198,8 @@
             android:layout_height="wrap_content"
             android:textSize="11sp"
             android:textColor="#333333"
-            android:fontFamily="monospace" />
+            android:fontFamily="monospace"
+            android:textIsSelectable="true" />
     </ScrollView>
 
 </LinearLayout>
