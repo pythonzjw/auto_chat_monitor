@@ -106,10 +106,28 @@ object MessageCollector {
     }
 
     fun scrollUpToBookmark(service: WeWorkAccessibilityService, metrics: DisplayMetrics, maxScrolls: Int = 30): BookmarkResult? {
+        var lastFirstContent = ""
+        var sameCount = 0
+
         for (i in 0 until maxScrolls) {
             if (!CollectorService.isRunning) return null
             val result = findBookmarkOnScreen(service)
             if (result != null) return result
+
+            // 到顶检测：连续 3 次第一条消息内容不变 → 已到顶，不再无意义滑动
+            val messages = collectVisibleMessages(service)
+            val firstContent = messages.firstOrNull()?.content ?: ""
+            if (firstContent == lastFirstContent && firstContent.isNotEmpty()) {
+                sameCount++
+                if (sameCount >= 3) {
+                    log("[采集] 已到达消息列表顶部，停止查找书签")
+                    return null
+                }
+            } else {
+                sameCount = 0
+                lastFirstContent = firstContent
+            }
+
             GestureHelper.swipeUp(service, metrics)
             // 安全检查：滑动后确认还在聊天页面（ListView 存在）
             if (!isChatPageVisible(service)) {
