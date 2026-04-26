@@ -81,7 +81,15 @@ object Storage {
 
     fun matchesBookmark(sender: String?, content: String?): Boolean {
         val bm = bookmark ?: return false
-        return (sender ?: "") == bm.sender && (content ?: "").take(30) == bm.content
+        val c = (content ?: "").take(30)
+        // 精确匹配：sender + content
+        if ((sender ?: "") == bm.sender && c == bm.content) return true
+        // 放宽匹配：只比 content（处理版本升级导致 sender 变化的情况）
+        if (c.isNotEmpty() && c == bm.content) {
+            Log.d(TAG, "书签宽松匹配: sender不同(${sender} vs ${bm.sender})，但content一致")
+            return true
+        }
+        return false
     }
 
     // ===== 指纹管理 =====

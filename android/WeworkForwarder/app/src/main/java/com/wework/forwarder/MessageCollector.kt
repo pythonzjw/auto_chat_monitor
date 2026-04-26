@@ -98,6 +98,11 @@ object MessageCollector {
             val result = findBookmarkOnScreen(service)
             if (result != null) return result
             GestureHelper.swipeUp(service, metrics)
+            // 安全检查：滑动后确认还在聊天页面（ListView 存在）
+            if (!isChatPageVisible(service)) {
+                log("[采集] 滑动后已离开聊天页面，停止回溯")
+                return null
+            }
         }
         log("[采集] 滚动 $maxScrolls 次未找到书签")
         return null
@@ -169,12 +174,13 @@ object MessageCollector {
 
         val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
         if (chatList == null) {
-            if (Config.debug) Log.d(TAG, "找不到 ListView")
+            log("[策略1] 找不到 ListView，根节点包名=${root.packageName}, class=${root.className}")
             return messages
         }
 
         var currentTime = ""
         val childCount = chatList.childCount
+        log("[策略1] 找到 ListView，childCount=$childCount")
         for (i in 0 until childCount) {
             val child = chatList.getChild(i) ?: continue
             val result = parseListItem(child, halfWidth, currentTime)
@@ -357,9 +363,14 @@ object MessageCollector {
 
         val groups = groupByProximity(textItems, 60)
 
+        // sender 判断：用内容区域的左边界判断
+        // 别人的消息气泡紧贴左侧头像，left 约 screenWidth * 0.15
+        // 我的消息气泡右对齐，left 通常 > screenWidth * 0.3
+        val leftThreshold = (screenWidth * 0.25).toInt()
+
         for (group in groups) {
-            val avgX = group.map { it.bounds.centerX() }.average().toInt()
-            val isRightSide = avgX > halfWidth
+            val minLeft = group.minOf { it.bounds.left }
+            val isRightSide = minLeft >= leftThreshold
             val content = group.joinToString(" ") { it.text.trimEnd() }
             if (content.isBlank()) continue
 
@@ -413,6 +424,16 @@ object MessageCollector {
         }
         groups.add(current)
         return groups
+    }
+
+    /**
+     * 检查当前是否还在聊天页面（ListView 存在）
+     * 用于滑动后安全检查，防止滑出聊天页面
+     */
+    fun isChatPageVisible(service: WeWorkAccessibilityService): Boolean {
+        val root = service.getRootNode() ?: return false
+        // 企微聊天页面特征：有 ListView
+        return NodeFinder.findByClassName(root, "android.widget.ListView") != null
     }
 
     // ===== 数据类 =====

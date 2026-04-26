@@ -206,6 +206,11 @@ object MessageForwarder {
                 }
             }
             GestureHelper.swipeUp(service, metrics)
+            // 安全检查：滑动后确认还在聊天页面
+            if (!MessageCollector.isChatPageVisible(service)) {
+                log("[转发] 滑动后已离开聊天页面，停止回溯")
+                return
+            }
         }
     }
 

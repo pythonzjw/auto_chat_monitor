@@ -68,14 +68,30 @@ class WeWorkAccessibilityService : AccessibilityService() {
     // ===== 控件树操作 =====
 
     /**
-     * 获取当前窗口根节点
+     * 获取企业微信窗口的根节点
+     *
+     * 优先从 windows 列表中找企微包名的窗口（避免悬浮窗干扰），
+     * 找不到时降级到 rootInActiveWindow
      */
     fun getRootNode(): AccessibilityNodeInfo? {
         return try {
+            // 遍历所有窗口，找企微的窗口
+            for (window in windows) {
+                val root = window.root ?: continue
+                if (root.packageName?.toString() == Config.WEWORK_PACKAGE) {
+                    return root
+                }
+            }
+            // 降级到 active window
             rootInActiveWindow
         } catch (e: Exception) {
-            Log.e(TAG, "获取根节点失败: ${e.message}")
-            null
+            // windows 可能抛异常（API 级别不够等），降级
+            try {
+                rootInActiveWindow
+            } catch (e2: Exception) {
+                Log.e(TAG, "获取根节点失败: ${e2.message}")
+                null
+            }
         }
     }
 
