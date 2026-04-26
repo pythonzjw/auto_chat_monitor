@@ -117,7 +117,7 @@ object MessageForwarder {
             msgElem.getBoundsInScreen(rect)
             log("[转发] 长按坐标: (${rect.centerX()}, ${rect.centerY()})")
             service.longPressAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-            GestureHelper.delay(800)
+            GestureHelper.delay(1200)
 
             // 步骤5：点击"多选"（在所有企微窗口中查找，包括弹出菜单）
             log("[转发] 步骤5: 查找'多选'...")
@@ -285,17 +285,16 @@ object MessageForwarder {
     }
 
     /**
-     * 在"选择联系人"页面中勾选目标群
+     * 在"选择联系人"页面中勾选目标群（多选模式）
      *
-     * 企微选群页面结构（从 dump 确认）：
-     * - 标题："选择联系人"
-     * - "最近聊天" | "创建聊天" | "转到微信"
-     * - ListView 列出最近聊天群，每个 item 中：
-     *   ViewGroup > TextView text="群名" + TextView text="(N)"
-     * - 没有搜索框（EditText），直接在列表中查找点击
+     * 流程：
+     *   1. 等待页面加载
+     *   2. 点右上角对勾 → 切换多选模式
+     *   3. 逐个查找群名 → 坐标点击勾选
+     *   4. 点右下角蓝色"确定"按钮
      */
     private fun selectTargetGroups(service: WeWorkAccessibilityService, groups: List<String>): Boolean {
-        // 等待选群页面加载
+        // 1. 等待选群页面加载
         val pageReady = NodeFinder.waitForNode(service, 3000) { root ->
             NodeFinder.findByText(root, "最近聊天")
                 ?: NodeFinder.findByText(root, "选择联系人")
@@ -306,33 +305,43 @@ object MessageForwarder {
             return false
         }
 
+        // 2. 点右上角对勾切换到多选模式
+        if (!switchToMultiSelect(service)) {
+            log("[选群] ✗ 切换多选模式失败")
+            dumpOnFailure(service, "切换多选失败")
+            return false
+        }
+        log("[选群] ✓ 已切换到多选模式")
+        GestureHelper.delay(800)
+
+        // 3. 逐个查找群名并勾选
         var selectedCount = 0
         for ((idx, groupName) in groups.withIndex()) {
             if (stopped()) return selectedCount > 0
             log("[选群] (${idx + 1}/${groups.size}) 查找: $groupName")
 
-            // 直接在列表中查找群名
             var found = false
             for (scroll in 0..5) {
                 val root = service.getRootNode() ?: continue
-                // 精确匹配群名文本
                 var result = NodeFinder.findByText(root, groupName)
                 if (result == null) {
-                    // 模糊匹配（群名可能有细微差别）
                     result = NodeFinder.findByTextContains(root, groupName)
                     if (result != null) log("[选群] 模糊匹配到: ${result.text}")
                 }
 
                 if (result != null) {
-                    NodeFinder.clickNode(service, result)
+                    // 用坐标点击（不走 clickNode 冒泡，避免点到页面容器）
+                    val rect = Rect()
+                    result.getBoundsInScreen(rect)
+                    service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
                     selectedCount++
                     found = true
-                    log("[选群] ✓ 已勾选: $groupName")
+                    log("[选群] ✓ 已勾选: $groupName (${rect.centerX()}, ${rect.centerY()})")
                     GestureHelper.delay(500)
                     break
                 }
 
-                // 没找到 → 向下滑动列表继续找
+                // 没找到 → 向下滑动继续找
                 if (scroll < 5) {
                     val metrics = service.resources.displayMetrics
                     GestureHelper.swipeDown(service, metrics)
@@ -356,25 +365,73 @@ object MessageForwarder {
         return selectedCount > 0
     }
 
+    /**
+     * 点击右上角对勾按钮，切换到多选模式
+     *
+     * 定位方式：在标题栏区域（top < 屏幕高度*0.15）找所有 clickable 节点，
+     * 取 bounds.right 最大（最靠右）的那个
+     */
+    private fun switchToMultiSelect(service: WeWorkAccessibilityService): Boolean {
+        val root = service.getRootNode() ?: return false
+        val metrics = service.resources.displayMetrics
+        val titleBarBottom = (metrics.heightPixels * 0.15).toInt()
+
+        // 找标题栏区域所有 clickable 节点
+        val clickables = NodeFinder.findAll(root) { node ->
+            if (!node.isClickable) return@findAll false
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            // 在标题栏区域，且宽度合理（不是整个页面那种大容器）
+            rect.top < titleBarBottom && rect.width() < metrics.widthPixels / 2
+        }
+
+        if (clickables.isEmpty()) {
+            log("[选群] 标题栏区域没有 clickable 节点")
+            return false
+        }
+
+        // 取 bounds.right 最大的（最右边的按钮）
+        val rightmost = clickables.maxByOrNull { node ->
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            rect.right
+        } ?: return false
+
+        val rect = Rect()
+        rightmost.getBoundsInScreen(rect)
+        log("[选群] 点击对勾按钮 (${rect.centerX()}, ${rect.centerY()})")
+        service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+        return true
+    }
+
+    /**
+     * 点击右下角蓝色"确定"按钮完成发送
+     */
     private fun confirmSend(service: WeWorkAccessibilityService): Boolean {
+        GestureHelper.delay(800)
+
+        // 找"确定"相关按钮（多选模式下通常在右下角）
         val root = service.getRootNode()
-        val sendBtn = NodeFinder.findByTextRegex(root, Regex("发送\\s*\\(\\d+\\)"))
-            ?: NodeFinder.findByText(root, "发送")
+        val sendBtn = NodeFinder.findByTextRegex(root, Regex("确定\\s*\\(\\d+\\)"))
+            ?: NodeFinder.findByTextRegex(root, Regex("发送\\s*\\(\\d+\\)"))
             ?: NodeFinder.findByText(root, "确定")
+            ?: NodeFinder.findByText(root, "发送")
             ?: NodeFinder.findByText(root, "确认")
         if (sendBtn == null) {
-            log("[转发] 找不到发送按钮")
+            log("[转发] 找不到确定/发送按钮")
             return false
         }
         log("[转发] 点击: ${sendBtn.text}")
         NodeFinder.clickNode(service, sendBtn)
         GestureHelper.delayExact(1500)
 
+        // 可能有二次确认弹窗（如"确认发送给N个群聊？"）
         val newRoot = service.getRootNode()
         val confirmAgain = NodeFinder.findByText(newRoot, "发送")
             ?: NodeFinder.findByText(newRoot, "确定")
+            ?: NodeFinder.findByText(newRoot, "确认")
         if (confirmAgain != null) {
-            log("[转发] 二次确认")
+            log("[转发] 二次确认: ${confirmAgain.text}")
             NodeFinder.clickNode(service, confirmAgain)
             GestureHelper.delay(1000)
         }
