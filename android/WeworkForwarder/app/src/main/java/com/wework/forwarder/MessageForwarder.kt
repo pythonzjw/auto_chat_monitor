@@ -279,49 +279,77 @@ object MessageForwarder {
         if (oneByOne != null) {
             log("[转发] 选择'逐条转发'")
             NodeFinder.clickNode(service, oneByOne)
-            GestureHelper.delay(800)
+            GestureHelper.delay(1500)
         }
         return true
     }
 
+    /**
+     * 在"选择联系人"页面中勾选目标群
+     *
+     * 企微选群页面结构（从 dump 确认）：
+     * - 标题："选择联系人"
+     * - "最近聊天" | "创建聊天" | "转到微信"
+     * - ListView 列出最近聊天群，每个 item 中：
+     *   ViewGroup > TextView text="群名" + TextView text="(N)"
+     * - 没有搜索框（EditText），直接在列表中查找点击
+     */
     private fun selectTargetGroups(service: WeWorkAccessibilityService, groups: List<String>): Boolean {
+        // 等待选群页面加载
+        val pageReady = NodeFinder.waitForNode(service, 3000) { root ->
+            NodeFinder.findByText(root, "最近聊天")
+                ?: NodeFinder.findByText(root, "选择联系人")
+        }
+        if (pageReady == null) {
+            log("[选群] 选群页面未加载")
+            dumpOnFailure(service, "选群页面未加载")
+            return false
+        }
+
         var selectedCount = 0
         for ((idx, groupName) in groups.withIndex()) {
             if (stopped()) return selectedCount > 0
-            log("[选群] (${idx + 1}/${groups.size}) 搜索: $groupName")
+            log("[选群] (${idx + 1}/${groups.size}) 查找: $groupName")
 
-            val root = service.getRootNode()
-            val searchInput = NodeFinder.findByClassName(root, "android.widget.EditText")
-            if (searchInput == null) {
-                log("[选群] ✗ 找不到搜索框")
-                dumpOnFailure(service, "选群无搜索框")
-                continue
+            // 直接在列表中查找群名
+            var found = false
+            for (scroll in 0..5) {
+                val root = service.getRootNode() ?: continue
+                // 精确匹配群名文本
+                var result = NodeFinder.findByText(root, groupName)
+                if (result == null) {
+                    // 模糊匹配（群名可能有细微差别）
+                    result = NodeFinder.findByTextContains(root, groupName)
+                    if (result != null) log("[选群] 模糊匹配到: ${result.text}")
+                }
+
+                if (result != null) {
+                    NodeFinder.clickNode(service, result)
+                    selectedCount++
+                    found = true
+                    log("[选群] ✓ 已勾选: $groupName")
+                    GestureHelper.delay(500)
+                    break
+                }
+
+                // 没找到 → 向下滑动列表继续找
+                if (scroll < 5) {
+                    val metrics = service.resources.displayMetrics
+                    GestureHelper.swipeDown(service, metrics)
+                    GestureHelper.delay(500)
+                }
             }
 
-            NodeFinder.setText(searchInput, groupName)
-            GestureHelper.delayExact(Config.SEARCH_WAIT_DELAY)
-
-            val resultRoot = service.getRootNode()
-            var result = NodeFinder.findByText(resultRoot, groupName)
-            if (result == null) {
-                result = NodeFinder.findByTextContains(resultRoot, groupName)
-                if (result != null) log("[选群] 模糊匹配到: ${result.text}")
-            }
-
-            if (result != null) {
-                NodeFinder.clickNode(service, result)
-                selectedCount++
-                log("[选群] ✓ 已勾选: $groupName")
-            } else {
+            if (!found) {
                 log("[选群] ✗ 未找到: $groupName")
-                val allTexts = NodeFinder.getAllTexts(resultRoot ?: service.getRootNode()!!)
-                val summary = allTexts.take(10).joinToString(", ") { "\"${it.text.take(20)}\"" }
-                log("[选群] 页面文本: $summary")
+                val root = service.getRootNode()
+                if (root != null) {
+                    val allTexts = NodeFinder.getAllTexts(root)
+                    val summary = allTexts.filter { it.text.trim().isNotEmpty() }
+                        .take(10).joinToString(", ") { "\"${it.text.take(20)}\"" }
+                    log("[选群] 页面文本: $summary")
+                }
             }
-
-            val input2 = NodeFinder.findByClassName(service.getRootNode(), "android.widget.EditText")
-            if (input2 != null) NodeFinder.setText(input2, "")
-            GestureHelper.delay(500)
         }
 
         log("[选群] 共勾选 $selectedCount/${groups.size}")
