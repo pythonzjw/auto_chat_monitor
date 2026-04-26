@@ -290,6 +290,10 @@ class CollectorService : Service() {
                     delay(Config.enterGroupWaitSeconds * 1000L)
                 }
 
+                // 滚到底部刷新控件树，确保新消息可见
+                GestureHelper.swipeDown(service, metrics)
+                delay(500)
+
                 if (MessageCollector.hasNewMessages(service)) {
                     log("发现新消息，开始转发...")
                     val success = MessageForwarder.forwardNewMessages(service, metrics)
