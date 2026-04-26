@@ -60,7 +60,7 @@ object Storage {
      * 兼容旧的无参 init()
      */
     fun init() {
-        if (!::dataDir.isInitialized) {
+        if (!isInitialized()) {
             Log.w(TAG, "Storage.init() 未传入 Context，跳过")
         }
     }
@@ -117,7 +117,7 @@ object Storage {
     // ===== 用户配置 =====
 
     fun loadUserConfig(context: Context): Boolean {
-        if (!::dataDir.isInitialized) {
+        if (!isInitialized()) {
             dataDir = File(context.filesDir, "wework-collector")
             if (!dataDir.exists()) dataDir.mkdirs()
         }
@@ -138,7 +138,7 @@ object Storage {
 
     /** 兼容旧的无参版本 */
     fun loadUserConfig(): Boolean {
-        if (!::dataDir.isInitialized) return false
+        if (!isInitialized()) return false
         return try {
             val file = File(dataDir, Config.USER_CONFIG_FILE)
             if (!file.exists()) return false
@@ -171,7 +171,7 @@ object Storage {
      */
     fun appendLogLine(line: String) {
         try {
-            if (!::dataDir.isInitialized) return
+            if (!isInitialized()) return
             val file = File(dataDir, Config.LOG_FILE)
             file.appendText(line + "\n")
             // 日志文件超过 500KB 时截断保留后半部分
@@ -189,7 +189,7 @@ object Storage {
      */
     fun readRecentLogs(maxLines: Int = 100): List<String> {
         return try {
-            if (!::dataDir.isInitialized) return emptyList()
+            if (!isInitialized()) return emptyList()
             val file = File(dataDir, Config.LOG_FILE)
             if (!file.exists()) return emptyList()
             file.readLines().takeLast(maxLines)
@@ -203,7 +203,7 @@ object Storage {
      */
     fun saveDump(filename: String, content: String): String? {
         return try {
-            if (!::dataDir.isInitialized) return null
+            if (!isInitialized()) return null
             val file = File(dataDir, filename)
             file.writeText(content)
             file.absolutePath
@@ -227,11 +227,14 @@ object Storage {
         return hash.toString(36)
     }
 
-    fun getDataDir(): File? = if (::dataDir.isInitialized) dataDir else null
+    fun getDataDir(): File? = if (isInitialized()) dataDir else null
+
+    /** 检查 dataDir 是否已初始化（供 inline 函数安全调用） */
+    fun isInitialized(): Boolean = ::dataDir.isInitialized
 
     private inline fun <reified T> loadFile(filename: String): T? {
         return try {
-            if (!::dataDir.isInitialized) return null
+            if (!isInitialized()) return null
             val file = File(dataDir, filename)
             if (!file.exists()) return null
             gson.fromJson(file.readText(), object : TypeToken<T>() {}.type)
@@ -243,7 +246,7 @@ object Storage {
 
     private fun saveFile(filename: String, data: Any?) {
         try {
-            if (!::dataDir.isInitialized) return
+            if (!isInitialized()) return
             val file = File(dataDir, filename)
             file.writeText(gson.toJson(data))
         } catch (e: Exception) {
