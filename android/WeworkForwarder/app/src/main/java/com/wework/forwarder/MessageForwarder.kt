@@ -484,48 +484,38 @@ object MessageForwarder {
             return false
         }
 
-        // 按 left 升序（对勾在搜索左边）
-        val sorted = clickables.sortedBy { node ->
+        // 按 left 升序，取第一个（对勾在搜索左边，不尝试后续按钮避免误点搜索）
+        val btn = clickables.minByOrNull { node ->
             val rect = Rect()
             node.getBoundsInScreen(rect)
             rect.left
+        } ?: return false
+
+        val rect = Rect()
+        btn.getBoundsInScreen(rect)
+        log("[选群] 点击对勾按钮 (${rect.centerX()}, ${rect.centerY()})，共找到 ${clickables.size} 个候选")
+        service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+
+        // 等待多选模式生效（最多 3 秒），替代硬等 800ms 后检查一次
+        val switched = NodeFinder.waitForNode(service, 3000) { r ->
+            // "从通讯录选择" 出现 = 多选模式
+            NodeFinder.findByText(r, "从通讯录选择")
+        }
+        if (switched != null) {
+            log("[选群] ✓ 多选模式已激活（找到'从通讯录选择'）")
+            return true
         }
 
-        for ((idx, btn) in sorted.withIndex()) {
-            val rect = Rect()
-            btn.getBoundsInScreen(rect)
-            log("[选群] 尝试按钮 ${idx + 1}/${sorted.size} (${rect.centerX()}, ${rect.centerY()})")
-            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-            GestureHelper.delay(800)
-
-            val checkRoot = service.getRootNode() ?: continue
-
-            // 验证：出现"从通讯录选择" = 成功
-            if (NodeFinder.findByText(checkRoot, "从通讯录选择") != null) {
-                log("[选群] ✓ 多选模式已激活（找到'从通讯录选择'）")
-                return true
-            }
-
-            // 验证："创建聊天"消失也说明切换成功
-            if (NodeFinder.findByText(checkRoot, "创建聊天") == null
-                && NodeFinder.findByText(checkRoot, "最近聊天") != null) {
-                log("[选群] ✓ 多选模式已激活（'创建聊天'已消失）")
-                return true
-            }
-
-            // 检查是否还在选群页面
-            val stillOnPage = NodeFinder.findByText(checkRoot, "最近聊天")
-                ?: NodeFinder.findByText(checkRoot, "选择联系人")
-            if (stillOnPage == null) {
-                log("[选群] 按钮 ${idx + 1} 导致离开选群页面，pressBack 恢复")
-                service.pressBack()
-                GestureHelper.delay(500)
-            } else {
-                log("[选群] 按钮 ${idx + 1} 点击后仍在选群页面，继续尝试下一个")
-            }
+        // 备选验证："创建聊天"消失 + "最近聊天"仍在 = 也算成功
+        val checkRoot = service.getRootNode()
+        if (checkRoot != null
+            && NodeFinder.findByText(checkRoot, "创建聊天") == null
+            && NodeFinder.findByText(checkRoot, "最近聊天") != null) {
+            log("[选群] ✓ 多选模式已激活（'创建聊天'已消失）")
+            return true
         }
 
-        log("[选群] 所有按钮都试过，无法切换多选模式")
+        log("[选群] 点击对勾后未切换到多选模式")
         return false
     }
 
