@@ -233,34 +233,78 @@ object MessageForwarder {
         }
     }
 
+    /**
+     * 向下滑动到底部，找到正确方向的"选择到这里"按钮并点击
+     *
+     * 企微多选模式有两个"选择到这里"按钮（带方向箭头）：
+     *   ↑ 选择到这里 — 向下选（我们需要这个：从第一条新消息选到最底部）
+     *   ↓ 选择到这里 — 向上选（不要点这个，会选中旧消息）
+     *
+     * 区分方式：取 bounds.centerY 最大的（最靠底部的 = ↑ 向下选方向）
+     */
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
         for (i in 0 until 10) {
             if (stopped()) return false
             GestureHelper.swipeDown(service, metrics)
-            val root = service.getRootNode()
-            val selectBtn = NodeFinder.findByText(root, "选择到这里")
-                ?: NodeFinder.findByTextContains(root, "选择到这里")
-                ?: NodeFinder.findByDesc(root, "选择到这里")
-            if (selectBtn != null) {
-                log("[转发] 找到'选择到这里'")
-                NodeFinder.clickNode(service, selectBtn)
+
+            val btn = findSelectToHereDown(service)
+            if (btn != null) {
+                val rect = Rect()
+                btn.getBoundsInScreen(rect)
+                log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}")
+                service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
                 GestureHelper.delay(1000)
                 return true
             }
         }
 
-        val root = service.getRootNode()
-        val selectBtn = NodeFinder.findByText(root, "选择到这里")
-            ?: NodeFinder.findByTextContains(root, "选择到这里")
-            ?: NodeFinder.findByDesc(root, "选择到这里")
-        if (selectBtn != null) {
-            NodeFinder.clickNode(service, selectBtn)
+        // 最后再检查一次（可能滑到底了按钮才出现）
+        val btn = findSelectToHereDown(service)
+        if (btn != null) {
+            val rect = Rect()
+            btn.getBoundsInScreen(rect)
+            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
             GestureHelper.delay(1000)
             return true
         }
 
         log("[转发] 未找到'选择到这里'，可能只有一条新消息")
         return true
+    }
+
+    /**
+     * 查找"选择到这里"按钮，如果有多个取 centerY 最大的（向下选方向）
+     */
+    private fun findSelectToHereDown(service: WeWorkAccessibilityService): AccessibilityNodeInfo? {
+        val root = service.getRootNode() ?: return null
+
+        // 收集所有包含"选择到这里"的节点
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+
+        // 通过 text 查找
+        val byText = NodeFinder.findAll(root) { node ->
+            val text = node.text?.toString() ?: ""
+            text.contains("选择到这里")
+        }
+        candidates.addAll(byText)
+
+        // 通过 contentDescription 查找
+        val byDesc = NodeFinder.findAll(root) { node ->
+            val desc = node.contentDescription?.toString() ?: ""
+            desc.contains("选择到这里")
+        }
+        candidates.addAll(byDesc)
+
+        if (candidates.isEmpty()) return null
+        if (candidates.size == 1) return candidates[0]
+
+        // 多个候选 → 取 centerY 最大的（最靠底部 = ↑向下选方向）
+        log("[转发] 找到 ${candidates.size} 个'选择到这里'，取最底部的")
+        return candidates.maxByOrNull { node ->
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            rect.centerY()
+        }
     }
 
     private fun clickForward(service: WeWorkAccessibilityService): Boolean {
@@ -368,40 +412,62 @@ object MessageForwarder {
     /**
      * 点击右上角对勾按钮，切换到多选模式
      *
-     * 定位方式：在标题栏区域（top < 屏幕高度*0.15）找所有 clickable 节点，
-     * 取 bounds.right 最大（最靠右）的那个
+     * 策略：标题栏右上角有多个 clickable 按钮（如搜索、对勾），无法直接区分。
+     * 逐个尝试点击，点击后验证是否切换成功（检查"确定"按钮是否出现）。
      */
     private fun switchToMultiSelect(service: WeWorkAccessibilityService): Boolean {
         val root = service.getRootNode() ?: return false
         val metrics = service.resources.displayMetrics
         val titleBarBottom = (metrics.heightPixels * 0.15).toInt()
+        val halfWidth = metrics.widthPixels / 2
 
-        // 找标题栏区域所有 clickable 节点
+        // 找标题栏右半区域所有 clickable 节点（排除大容器和返回按钮）
         val clickables = NodeFinder.findAll(root) { node ->
             if (!node.isClickable) return@findAll false
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            // 在标题栏区域，且宽度合理（不是整个页面那种大容器）
-            rect.top < titleBarBottom && rect.width() < metrics.widthPixels / 2
+            rect.top < titleBarBottom
+                    && rect.left > halfWidth    // 只找右半边
+                    && rect.width() < halfWidth // 排除大容器
+                    && rect.height() < titleBarBottom // 排除大容器
         }
 
         if (clickables.isEmpty()) {
-            log("[选群] 标题栏区域没有 clickable 节点")
+            log("[选群] 标题栏右侧没有 clickable 节点")
             return false
         }
 
-        // 取 bounds.right 最大的（最右边的按钮）
-        val rightmost = clickables.maxByOrNull { node ->
+        // 按 bounds.right 降序（从最右侧开始尝试）
+        val sorted = clickables.sortedByDescending { node ->
             val rect = Rect()
             node.getBoundsInScreen(rect)
             rect.right
-        } ?: return false
+        }
 
-        val rect = Rect()
-        rightmost.getBoundsInScreen(rect)
-        log("[选群] 点击对勾按钮 (${rect.centerX()}, ${rect.centerY()})")
-        service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-        return true
+        for ((idx, btn) in sorted.withIndex()) {
+            val rect = Rect()
+            btn.getBoundsInScreen(rect)
+            log("[选群] 尝试按钮 ${idx + 1}/${sorted.size} (${rect.centerX()}, ${rect.centerY()})")
+            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+            GestureHelper.delay(800)
+
+            // 验证：多选模式下右下角会出现"确定"按钮
+            val checkRoot = service.getRootNode() ?: continue
+            val confirmBtn = NodeFinder.findByText(checkRoot, "确定")
+                ?: NodeFinder.findByTextRegex(checkRoot, Regex("确定\\s*\\(\\d+\\)"))
+            if (confirmBtn != null) {
+                log("[选群] ✓ 多选模式已激活（找到确定按钮）")
+                return true
+            }
+
+            // 没激活 → 可能打开了搜索等其他功能，按 back 返回
+            log("[选群] 按钮 ${idx + 1} 不是对勾，返回重试")
+            service.pressBack()
+            GestureHelper.delay(500)
+        }
+
+        log("[选群] 所有按钮都试过，无法切换多选模式")
+        return false
     }
 
     /**
