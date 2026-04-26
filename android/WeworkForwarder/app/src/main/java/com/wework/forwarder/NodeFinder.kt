@@ -118,8 +118,9 @@ object NodeFinder {
     }
 
     private fun collectTexts(node: AccessibilityNodeInfo, results: MutableList<TextNode>) {
-        val text = node.text?.toString()?.trim()
-        if (!text.isNullOrEmpty()) {
+        val text = node.text?.toString()
+        // 保留原始文本（不 trim），空格文本 " " 是企微头像占位符
+        if (text != null && text.isNotEmpty()) {
             val rect = Rect()
             node.getBoundsInScreen(rect)
             results.add(TextNode(text, rect))

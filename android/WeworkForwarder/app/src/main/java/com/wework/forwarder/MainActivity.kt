@@ -222,6 +222,8 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * dump 当前企业微信 UI 控件树（调试用）
+     *
+     * 优先 dump 企微窗口；如果找不到企微窗口，dump 当前活动窗口并标注
      */
     private fun dumpUiTree() {
         val service = WeWorkAccessibilityService.instance
@@ -230,20 +232,36 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (!service.isInWeWork()) {
-            Toast.makeText(this, "请先切换到企业微信页面", Toast.LENGTH_LONG).show()
-            return
+        // 遍历所有窗口，优先找企微窗口
+        var root: android.view.accessibility.AccessibilityNodeInfo? = null
+        var rootSource = "unknown"
+        try {
+            for (window in service.windows) {
+                val r = window.root ?: continue
+                if (r.packageName?.toString() == Config.WEWORK_PACKAGE) {
+                    root = r
+                    rootSource = "企微窗口"
+                    break
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 降级到 active window
+        if (root == null) {
+            root = service.rootInActiveWindow
+            rootSource = "当前活动窗口(非企微)"
         }
 
-        val root = service.getRootNode()
         if (root == null) {
-            appendLog("无法获取根节点")
+            appendLog("无法获取根节点，请确保企业微信在前台或最近使用过")
             return
         }
 
         val dump = NodeFinder.dumpTree(root)
         val header = buildString {
-            appendLine("包名: ${service.currentPackage}")
+            appendLine("来源: $rootSource")
+            appendLine("根节点包名: ${root.packageName}")
+            appendLine("事件包名: ${service.currentPackage}")
             appendLine("活动: ${service.currentActivity}")
             appendLine("时间: ${Storage.now()}")
             appendLine("屏幕: ${resources.displayMetrics.widthPixels} x ${resources.displayMetrics.heightPixels}")
@@ -254,8 +272,8 @@ class MainActivity : AppCompatActivity() {
         val filename = "ui_dump_${System.currentTimeMillis()}.txt"
         val path = Storage.saveDump(filename, header + dump)
         if (path != null) {
-            appendLog("控件树已保存: $filename")
-            Toast.makeText(this, "控件树已保存", Toast.LENGTH_SHORT).show()
+            appendLog("控件树已保存($rootSource): $filename")
+            Toast.makeText(this, "控件树已保存($rootSource)", Toast.LENGTH_SHORT).show()
         } else {
             appendLog("保存控件树失败")
         }

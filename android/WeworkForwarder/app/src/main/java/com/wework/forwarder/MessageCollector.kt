@@ -363,14 +363,15 @@ object MessageCollector {
 
         val groups = groupByProximity(textItems, 60)
 
-        // sender 判断：用内容区域的左边界判断
-        // 别人的消息气泡紧贴左侧头像，left 约 screenWidth * 0.15
-        // 我的消息气泡右对齐，left 通常 > screenWidth * 0.3
-        val leftThreshold = (screenWidth * 0.25).toInt()
+        // sender 判断：综合 left 和 right 边界
+        // 我的消息：右对齐，right 接近屏幕右侧（> 85%屏宽）
+        // 别人的消息：左对齐，right 通常不超过屏幕右侧
+        // 注意：宽气泡（如长 URL）left 可能很小但 right 接近右侧 → 仍是"我"
+        val rightThreshold = (screenWidth * 0.85).toInt()
 
         for (group in groups) {
-            val minLeft = group.minOf { it.bounds.left }
-            val isRightSide = minLeft >= leftThreshold
+            val maxRight = group.maxOf { it.bounds.right }
+            val isRightSide = maxRight >= rightThreshold
             val content = group.joinToString(" ") { it.text.trimEnd() }
             if (content.isBlank()) continue
 
@@ -397,8 +398,9 @@ object MessageCollector {
     }
 
     private fun isSystemMessage(text: String): Boolean {
+        // 注意：关键词必须足够具体，避免误匹配用户名（如用户名叫"拒绝"）
         val keywords = listOf("加入了群聊", "退出了群聊", "移出了群聊", "修改群名",
-            "撤回了一条消息", "你已被", "邀请了", "拒绝")
+            "撤回了一条消息", "你已被", "邀请了")
         return keywords.any { text.contains(it) }
     }
 
