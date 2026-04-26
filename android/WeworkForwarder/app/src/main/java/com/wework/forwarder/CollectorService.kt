@@ -142,6 +142,33 @@ class CollectorService : Service() {
         log("已进入源群，等待 ${Config.enterGroupWaitSeconds} 秒...")
         delay(Config.enterGroupWaitSeconds * 1000L)
 
+        // 先滚到底部，确保 ListView 加载了最新消息
+        for (i in 0 until 3) {
+            GestureHelper.swipeDown(service, metrics)
+        }
+        delay(500)
+
+        // 自动 dump 企微控件树（诊断用，每次启动保存一份）
+        try {
+            val dumpRoot = service.getRootNode()
+            if (dumpRoot != null) {
+                val dump = NodeFinder.dumpTree(dumpRoot)
+                val header = buildString {
+                    appendLine("=== 自动 dump（采集启动时） ===")
+                    appendLine("根节点包名: ${dumpRoot.packageName}")
+                    appendLine("事件包名: ${service.currentPackage}")
+                    appendLine("Activity: ${service.currentActivity}")
+                    appendLine("时间: ${Storage.now()}")
+                    appendLine("屏幕: ${metrics.widthPixels}x${metrics.heightPixels}")
+                    appendLine("==============================")
+                }
+                Storage.saveDump("auto_dump_chat.txt", header + dump)
+                log("已自动保存企微控件树 dump (auto_dump_chat.txt)")
+            }
+        } catch (e: Exception) {
+            log("自动 dump 失败: ${e.message}")
+        }
+
         // 检查是否有新消息需要转发
         if (MessageCollector.hasNewMessages(service)) {
             log("发现新消息，执行首次转发...")
