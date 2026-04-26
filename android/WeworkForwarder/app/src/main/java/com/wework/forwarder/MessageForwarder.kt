@@ -273,10 +273,17 @@ object MessageForwarder {
     }
 
     /**
-     * 查找"选择到这里"按钮，如果有多个取 centerY 最大的（向下选方向）
+     * 查找"选择到这里"按钮（↑向下选方向）
+     *
+     * 企微多选模式有两个方向按钮，区分方式：
+     *   - 多个候选 → 取 centerY 最大的（最靠底部 = ↑向下选）
+     *   - 只有 1 个 → 检查 y 值：上半屏(↓向上选)跳过，下半屏(↑向下选)使用
+     *
+     * v1.6.1：修复单个按钮在上半屏时误点（y=318 在标题栏附近 = 向上选方向）
      */
     private fun findSelectToHereDown(service: WeWorkAccessibilityService): AccessibilityNodeInfo? {
         val root = service.getRootNode() ?: return null
+        val screenHeight = service.resources.displayMetrics.heightPixels
 
         // 收集所有包含"选择到这里"的节点
         val candidates = mutableListOf<AccessibilityNodeInfo>()
@@ -296,7 +303,17 @@ object MessageForwarder {
         candidates.addAll(byDesc)
 
         if (candidates.isEmpty()) return null
-        if (candidates.size == 1) return candidates[0]
+
+        if (candidates.size == 1) {
+            val rect = Rect()
+            candidates[0].getBoundsInScreen(rect)
+            if (rect.centerY() < screenHeight / 2) {
+                // 在上半屏 = ↓向上选方向，不要点（会选中旧消息）
+                log("[转发] 唯一'选择到这里'在上半屏(y=${rect.centerY()})，跳过继续滑")
+                return null
+            }
+            return candidates[0]
+        }
 
         // 多个候选 → 取 centerY 最大的（最靠底部 = ↑向下选方向）
         log("[转发] 找到 ${candidates.size} 个'选择到这里'，取最底部的")
@@ -412,24 +429,30 @@ object MessageForwarder {
     /**
      * 点击右上角对勾按钮，切换到多选模式
      *
-     * 策略：标题栏右上角有多个 clickable 按钮（如搜索、对勾），无法直接区分。
-     * 逐个尝试点击，点击后验证是否切换成功（检查"确定"按钮是否出现）。
+     * 策略：标题栏第一行右侧有 2 个 clickable 按钮（对勾、搜索），
+     * 通过严格 y 范围过滤排除 tab 按钮，逐个尝试点击并验证。
+     *
+     * 关键改动（v1.6.1）：
+     *   - 收紧 y 范围 [80,260]，排除 tab 按钮（y≈286-338）
+     *   - 不盲目 pressBack（会退出选群页面）：只在页面确实变了才 back
+     *   - 放宽验证：除"确定"外也检查 CheckBox；仅 2 个候选且页面没变即视为成功
+     *   - 排序改为 left 升序（对勾在搜索左边，先试更可能的）
      */
     private fun switchToMultiSelect(service: WeWorkAccessibilityService): Boolean {
         val root = service.getRootNode() ?: return false
         val metrics = service.resources.displayMetrics
-        val titleBarBottom = (metrics.heightPixels * 0.15).toInt()
         val halfWidth = metrics.widthPixels / 2
 
-        // 找标题栏右半区域所有 clickable 节点（排除大容器和返回按钮）
+        // 严格过滤：只取标题栏第一行按钮（dump 确认 y=[112,247]）
+        // 排除 tab 按钮（y=[286,338]）和大容器
         val clickables = NodeFinder.findAll(root) { node ->
             if (!node.isClickable) return@findAll false
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            rect.top < titleBarBottom
-                    && rect.left > halfWidth    // 只找右半边
-                    && rect.width() < halfWidth // 排除大容器
-                    && rect.height() < titleBarBottom // 排除大容器
+            rect.top >= 80 && rect.bottom <= 260  // 严格标题栏区域
+                    && rect.left > halfWidth       // 右半边
+                    && rect.width() < 200          // 排除大容器
+                    && rect.height() < 200         // 排除大容器
         }
 
         if (clickables.isEmpty()) {
@@ -437,22 +460,23 @@ object MessageForwarder {
             return false
         }
 
-        // 按 bounds.right 降序（从最右侧开始尝试）
-        val sorted = clickables.sortedByDescending { node ->
+        // 按 bounds.left 升序（从左到右，对勾通常在搜索左边）
+        val sorted = clickables.sortedBy { node ->
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            rect.right
+            rect.left
         }
 
         for ((idx, btn) in sorted.withIndex()) {
             val rect = Rect()
             btn.getBoundsInScreen(rect)
-            log("[选群] 尝试按钮 ${idx + 1}/${sorted.size} (${rect.centerX()}, ${rect.centerY()})")
+            log("[选群] 尝试按钮 ${idx + 1}/${sorted.size} (${rect.centerX()}, ${rect.centerY()}) bounds=[${rect.left},${rect.top},${rect.right},${rect.bottom}]")
             service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
             GestureHelper.delay(800)
 
-            // 验证：多选模式下右下角会出现"确定"按钮
             val checkRoot = service.getRootNode() ?: continue
+
+            // 验证方式1：找"确定"按钮（有勾选时显示）
             val confirmBtn = NodeFinder.findByText(checkRoot, "确定")
                 ?: NodeFinder.findByTextRegex(checkRoot, Regex("确定\\s*\\(\\d+\\)"))
             if (confirmBtn != null) {
@@ -460,10 +484,32 @@ object MessageForwarder {
                 return true
             }
 
-            // 没激活 → 可能打开了搜索等其他功能，按 back 返回
-            log("[选群] 按钮 ${idx + 1} 不是对勾，返回重试")
-            service.pressBack()
-            GestureHelper.delay(500)
+            // 验证方式2：检查是否出现 CheckBox 类控件
+            val hasCheckbox = NodeFinder.findAll(checkRoot) { node ->
+                node.className?.toString()?.contains("CheckBox") == true
+            }.isNotEmpty()
+            if (hasCheckbox) {
+                log("[选群] ✓ 多选模式已激活（找到 CheckBox）")
+                return true
+            }
+
+            // 检查是否还在选群页面
+            val stillOnPage = NodeFinder.findByText(checkRoot, "最近聊天")
+                ?: NodeFinder.findByText(checkRoot, "选择联系人")
+            if (stillOnPage == null) {
+                // 页面变了（可能打开了搜索），pressBack 恢复
+                log("[选群] 按钮 ${idx + 1} 导致离开选群页面，pressBack 恢复")
+                service.pressBack()
+                GestureHelper.delay(500)
+            } else {
+                // 还在选群页面，可能已切换但没勾选所以"确定"未显示
+                // 标题栏最多 2 个按钮（对勾+搜索），点了还在页面就是对勾
+                if (sorted.size <= 2) {
+                    log("[选群] ✓ 假定多选模式已激活（仅 ${sorted.size} 个候选，页面未变化）")
+                    return true
+                }
+                log("[选群] 按钮 ${idx + 1} 点击后仍在选群页面，继续尝试下一个")
+            }
         }
 
         log("[选群] 所有按钮都试过，无法切换多选模式")
