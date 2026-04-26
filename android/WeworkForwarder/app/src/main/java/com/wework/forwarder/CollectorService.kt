@@ -187,7 +187,7 @@ class CollectorService : Service() {
                     delay(Config.enterGroupWaitSeconds * 1000L)
                 }
 
-                // 检查新消息
+                // 检查新消息（hasNewMessages 内部会打印诊断日志）
                 if (MessageCollector.hasNewMessages(service)) {
                     log("发现新消息，开始转发...")
                     val success = MessageForwarder.forwardNewMessages(service, metrics)
@@ -195,8 +195,6 @@ class CollectorService : Service() {
                     if (!success) floatingLog?.setStatus("error")
                     Navigator.enterGroup(service, metrics, Config.sourceGroup)
                     delay(Config.enterGroupWaitSeconds * 1000L)
-                } else {
-                    if (Config.debug) log("暂无新消息")
                 }
 
                 consecutiveErrors = 0

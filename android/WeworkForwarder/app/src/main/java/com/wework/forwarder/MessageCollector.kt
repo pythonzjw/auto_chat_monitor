@@ -65,15 +65,28 @@ object MessageCollector {
             return true
         }
         val messages = collectVisibleMessages(service)
-        val lastMsg = messages.lastOrNull() ?: run {
+        if (messages.isEmpty()) {
             log("[采集] 无法读取屏幕消息")
             return false
         }
-        if (Storage.matchesBookmark(lastMsg.sender, lastMsg.content)) {
-            if (Config.debug) Log.d(TAG, "最后一条和书签一致，没有新消息")
-            return false
+
+        // 在消息列表中从后往前找书签位置
+        for (i in messages.indices.reversed()) {
+            if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
+                if (i < messages.size - 1) {
+                    // 书签不是最后一条 → 书签后面有新消息
+                    log("[采集] 书签在位置 ${i+1}/${messages.size}，后面有 ${messages.size - 1 - i} 条新消息")
+                    return true
+                } else {
+                    // 书签是最后一条 → 没有新消息
+                    log("[采集] 书签是最后一条(${messages[i].content.take(20)})，暂无新消息")
+                    return false
+                }
+            }
         }
-        log("[采集] 发现新消息")
+
+        // 屏幕上找不到书签 → 认为有新消息（书签已被新消息推出屏幕）
+        log("[采集] 屏幕上找不到书签(${bookmark.content.take(20)})，最后一条: ${messages.last().content.take(20)}，认为有新消息")
         return true
     }
 
@@ -181,15 +194,18 @@ object MessageCollector {
         var currentTime = ""
         val childCount = chatList.childCount
         log("[策略1] 找到 ListView，childCount=$childCount")
+        var skipCount = 0
+        var timeCount = 0
         for (i in 0 until childCount) {
             val child = chatList.getChild(i) ?: continue
             val result = parseListItem(child, halfWidth, currentTime)
             when (result) {
-                is ParseResult.TimeLabel -> currentTime = result.time
+                is ParseResult.TimeLabel -> { currentTime = result.time; timeCount++ }
                 is ParseResult.Msg -> messages.add(result.message)
-                is ParseResult.Skip -> { /* 系统消息/空占位，跳过 */ }
+                is ParseResult.Skip -> skipCount++
             }
         }
+        log("[策略1] 解析结果: ${messages.size}条消息, ${timeCount}个时间, ${skipCount}个跳过")
         return messages
     }
 
