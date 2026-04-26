@@ -457,6 +457,12 @@ object MessageForwarder {
      *   3. 验证："从通讯录选择"出现 或 "创建聊天"消失
      */
     private fun switchToMultiSelect(service: WeWorkAccessibilityService): Boolean {
+        // 防御：企微不在前台时不操作，避免在桌面上乱点
+        if (!service.isInWeWork()) {
+            log("[选群] 企微不在前台，无法切换多选")
+            return false
+        }
+
         val root = service.getRootNode() ?: return false
 
         // 已经在多选模式

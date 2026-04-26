@@ -91,14 +91,12 @@ class WeWorkAccessibilityService : AccessibilityService() {
                     }
                 }
             }
-            bestRoot ?: rootInActiveWindow
+            // 不降级到 rootInActiveWindow，企微不在前台时返回 null，
+            // 避免拿到桌面/其他应用的窗口导致在错误页面操作
+            bestRoot
         } catch (e: Exception) {
-            try {
-                rootInActiveWindow
-            } catch (e2: Exception) {
-                Log.e(TAG, "获取根节点失败: ${e2.message}")
-                null
-            }
+            Log.e(TAG, "获取根节点失败: ${e.message}")
+            null
         }
     }
 
