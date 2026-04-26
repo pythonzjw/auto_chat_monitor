@@ -11,14 +11,19 @@ import android.os.IBinder
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
+import androidx.core.content.FileProvider
+import java.io.File
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.*
 
 /**
  * 采集前台服务
  *
- * 主循环：轮询 → 检查新消息 → 转发 → 回到源群
- * 同时管理悬浮窗生命周期
+ * 启动后只显示悬浮窗，等用户点"开始"才运行采集循环。
+ * 悬浮窗按钮：开始 / 停止 / 分析控件 / 导出
  */
 class CollectorService : Service() {
 
@@ -31,7 +36,7 @@ class CollectorService : Service() {
         var isRunning = false
             private set
 
-        /** 请求停止采集 */
+        /** 请求停止采集（不停止服务，只停止采集循环） */
         fun requestStop() {
             isRunning = false
         }
@@ -43,6 +48,7 @@ class CollectorService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private lateinit var metrics: DisplayMetrics
     private var floatingLog: FloatingLogView? = null
+    private var collectorJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -50,48 +56,19 @@ class CollectorService : Service() {
         super.onCreate()
         metrics = resources.displayMetrics
 
+        // 初始化存储（必须在 uiLog 之前）
+        Storage.init(this)
+
         // 创建悬浮窗（需要权限）
         if (Settings.canDrawOverlays(this)) {
             floatingLog = FloatingLogView(this)
             floatingLog?.create()
-            // "分析控件"按钮：dump 当前企微所有窗口的控件树
-            floatingLog?.onDumpClick = {
-                val service = WeWorkAccessibilityService.instance
-                if (service != null) {
-                    try {
-                        val roots = service.getAllRootNodes()
-                        val sb = StringBuilder()
-                        sb.appendLine("=== 手动 dump ===")
-                        sb.appendLine("Activity: ${service.currentActivity}")
-                        sb.appendLine("包名: ${service.currentPackage}")
-                        sb.appendLine("时间: ${Storage.now()}")
-                        sb.appendLine("屏幕: ${metrics.widthPixels}x${metrics.heightPixels}")
-                        sb.appendLine("窗口数: ${roots.size}")
-                        sb.appendLine("==============================")
-                        for ((i, root) in roots.withIndex()) {
-                            val rect = Rect()
-                            root.getBoundsInScreen(rect)
-                            sb.appendLine("--- 窗口 ${i + 1} (${rect.width()}x${rect.height()}) ---")
-                            sb.append(NodeFinder.dumpTree(root))
-                        }
-                        val filename = "dump_手动_${System.currentTimeMillis()}.txt"
-                        Storage.saveDump(filename, sb.toString())
-                        log("已保存: $filename")
-                    } catch (e: Exception) {
-                        log("dump 异常: ${e.message}")
-                    }
-                } else {
-                    log("无障碍服务未启动，无法 dump")
-                }
-            }
+            setupFloatingCallbacks()
         } else {
             Log.w(TAG, "没有悬浮窗权限，跳过创建悬浮窗")
         }
 
-        // 初始化存储（必须在 uiLog 之前，以便写日志文件）
-        Storage.init(this)
-
-        // 设置全局 uiLog 回调：同时输出到 Activity + 悬浮窗 + 日志文件
+        // 设置全局 uiLog 回调
         Config.uiLog = { msg ->
             val line = "[${Storage.now()}] $msg"
             Log.i(TAG, msg)
@@ -101,25 +78,90 @@ class CollectorService : Service() {
         }
     }
 
+    /**
+     * 设置悬浮窗各按钮的回调
+     */
+    private fun setupFloatingCallbacks() {
+        // 开始采集
+        floatingLog?.onStartClick = {
+            if (collectorJob?.isActive == true) {
+                log("采集已在运行中")
+            } else {
+                isRunning = true
+                floatingLog?.setStatus("running")
+                log("用户点击开始采集")
+                collectorJob = serviceScope.launch {
+                    try {
+                        runCollector()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        log("采集异常: ${e.message}")
+                        floatingLog?.setStatus("error")
+                    } finally {
+                        isRunning = false
+                        floatingLog?.setStatus("stopped")
+                        log("采集已停止")
+                    }
+                }
+            }
+        }
+
+        // 停止采集
+        floatingLog?.onStopClick = {
+            if (isRunning) {
+                isRunning = false
+                log("用户点击停止采集")
+                floatingLog?.setStatus("stopped")
+            } else {
+                log("当前未在运行")
+            }
+        }
+
+        // 分析控件
+        floatingLog?.onDumpClick = {
+            val service = WeWorkAccessibilityService.instance
+            if (service != null) {
+                try {
+                    val roots = service.getAllRootNodes()
+                    val sb = StringBuilder()
+                    sb.appendLine("=== 手动 dump ===")
+                    sb.appendLine("Activity: ${service.currentActivity}")
+                    sb.appendLine("包名: ${service.currentPackage}")
+                    sb.appendLine("时间: ${Storage.now()}")
+                    sb.appendLine("屏幕: ${metrics.widthPixels}x${metrics.heightPixels}")
+                    sb.appendLine("窗口数: ${roots.size}")
+                    sb.appendLine("==============================")
+                    for ((i, root) in roots.withIndex()) {
+                        val rect = Rect()
+                        root.getBoundsInScreen(rect)
+                        sb.appendLine("--- 窗口 ${i + 1} (${rect.width()}x${rect.height()}) ---")
+                        sb.append(NodeFinder.dumpTree(root))
+                    }
+                    val filename = "dump_手动_${System.currentTimeMillis()}.txt"
+                    Storage.saveDump(filename, sb.toString())
+                    log("已保存: $filename")
+                } catch (e: Exception) {
+                    log("dump 异常: ${e.message}")
+                }
+            } else {
+                log("无障碍服务未启动，无法 dump")
+            }
+        }
+
+        // 导出日志
+        floatingLog?.onExportClick = {
+            exportFiles()
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
-        isRunning = true
-        floatingLog?.setStatus("running")
 
-        serviceScope.launch {
-            try {
-                runCollector()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log("主线程异常: ${e.message}")
-                floatingLog?.setStatus("error")
-            } finally {
-                isRunning = false
-                stopSelf()
-            }
-        }
+        // 不自动启动采集，等用户在悬浮窗点"开始"
+        floatingLog?.setStatus("stopped")
+        log("服务已就绪，点击悬浮窗「开始」按钮启动采集")
 
         return START_NOT_STICKY
     }
@@ -129,7 +171,6 @@ class CollectorService : Service() {
         isRunning = false
         serviceScope.cancel()
 
-        // 销毁悬浮窗
         floatingLog?.destroy()
         floatingLog = null
         Config.uiLog = null
@@ -173,13 +214,13 @@ class CollectorService : Service() {
         log("已进入源群，等待 ${Config.enterGroupWaitSeconds} 秒...")
         delay(Config.enterGroupWaitSeconds * 1000L)
 
-        // 先滚到底部，确保 ListView 加载了最新消息
+        // 先滚到底部
         for (i in 0 until 3) {
             GestureHelper.swipeDown(service, metrics)
         }
         delay(500)
 
-        // 自动 dump 企微控件树（诊断用，每次启动保存一份）
+        // 自动 dump（诊断用）
         try {
             val dumpRoot = service.getRootNode()
             if (dumpRoot != null) {
@@ -225,7 +266,6 @@ class CollectorService : Service() {
 
         while (isRunning && coroutineContext.isActive) {
             try {
-                // 等待轮询间隔
                 floatingLog?.setStatus("waiting")
                 log("等待 ${Config.pollIntervalSeconds} 秒后检查...")
                 for (w in 0 until Config.pollIntervalSeconds) {
@@ -236,7 +276,6 @@ class CollectorService : Service() {
 
                 floatingLog?.setStatus("running")
 
-                // 确保企业微信在前台
                 if (!service.isInWeWork()) {
                     log("企业微信不在前台，尝试恢复...")
                     Navigator.ensureWeWorkForeground(service)
@@ -245,7 +284,6 @@ class CollectorService : Service() {
                     delay(Config.enterGroupWaitSeconds * 1000L)
                 }
 
-                // 检查新消息（hasNewMessages 内部会打印诊断日志）
                 if (MessageCollector.hasNewMessages(service)) {
                     log("发现新消息，开始转发...")
                     val success = MessageForwarder.forwardNewMessages(service, metrics)
@@ -257,7 +295,6 @@ class CollectorService : Service() {
 
                 consecutiveErrors = 0
 
-                // 定期清理过期指纹
                 if (Math.random() < 0.01) Storage.cleanOldFingerprints()
 
             } catch (e: CancellationException) {
@@ -270,7 +307,6 @@ class CollectorService : Service() {
                     log("连续错误次数过多，停止运行")
                     return
                 }
-                // 异常恢复
                 delay(5000)
                 try {
                     Navigator.goToMessageList(service)
@@ -286,6 +322,51 @@ class CollectorService : Service() {
         log("========================================")
         log("采集任务已停止")
         log("========================================")
+    }
+
+    /**
+     * 导出所有数据文件为 zip 并分享
+     */
+    private fun exportFiles() {
+        val srcDir = Storage.getDataDir()
+        if (srcDir == null || !srcDir.exists()) {
+            log("没有数据可导出")
+            return
+        }
+
+        val files = srcDir.listFiles()?.filter { it.isFile } ?: emptyList()
+        if (files.isEmpty()) {
+            log("没有数据文件")
+            return
+        }
+
+        try {
+            val zipFile = File(cacheDir, "wework-collector-export.zip")
+            ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
+                for (file in files) {
+                    zos.putNextEntry(ZipEntry(file.name))
+                    file.inputStream().use { it.copyTo(zos) }
+                    zos.closeEntry()
+                }
+            }
+
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", zipFile)
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, "企微转发日志导出")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                // Service 中启动 Activity 需要 FLAG_ACTIVITY_NEW_TASK
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(Intent.createChooser(shareIntent, "导出日志文件").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+
+            log("已打包 ${files.size} 个文件，请选择分享方式")
+        } catch (e: Exception) {
+            log("导出失败: ${e.message}")
+        }
     }
 
     private fun log(msg: String) {
@@ -309,14 +390,14 @@ class CollectorService : Service() {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("企微消息转发")
-                .setContentText("采集运行中")
+                .setContentText("服务就绪")
                 .setSmallIcon(android.R.drawable.ic_menu_send)
                 .build()
         } else {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
                 .setContentTitle("企微消息转发")
-                .setContentText("采集运行中")
+                .setContentText("服务就绪")
                 .setSmallIcon(android.R.drawable.ic_menu_send)
                 .build()
         }

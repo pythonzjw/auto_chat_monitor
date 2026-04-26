@@ -19,10 +19,9 @@ import android.widget.TextView
 /**
  * 悬浮日志窗口
  *
- * 顶部半透明状态条：
- *   - 收起时：一行状态文字（绿/黄/红色圆点 + 最新日志）
- *   - 展开时：显示最近 8 行日志
- *   - 可拖动
+ * 收起时：右上角小胶囊（不挡下面的点击）
+ * 展开时：日志区 + 按钮行（开始/停止/分析控件/导出）
+ * 可拖动
  */
 class FloatingLogView(private val context: Context) {
 
@@ -33,6 +32,9 @@ class FloatingLogView(private val context: Context) {
     private lateinit var statusBar: TextView
     private lateinit var logArea: ScrollView
     private lateinit var logText: TextView
+    private lateinit var btnRow: LinearLayout
+    private lateinit var startBtn: TextView
+    private lateinit var stopBtn: TextView
     private lateinit var params: WindowManager.LayoutParams
 
     private var isExpanded = false
@@ -40,11 +42,14 @@ class FloatingLogView(private val context: Context) {
     private val logLines = mutableListOf<String>()
     private val maxLines = 50
 
-    // 状态：running / waiting / error
-    private var currentStatus = "waiting"
+    // 状态：running / waiting / stopped / error
+    private var currentStatus = "stopped"
 
-    /** 点击"分析控件"按钮的回调 */
+    /** 回调 */
+    var onStartClick: (() -> Unit)? = null
+    var onStopClick: (() -> Unit)? = null
     var onDumpClick: (() -> Unit)? = null
+    var onExportClick: (() -> Unit)? = null
 
     @SuppressLint("ClickableViewAccessibility")
     fun create() {
@@ -53,17 +58,17 @@ class FloatingLogView(private val context: Context) {
         // 根容器
         rootView = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xDD1B1B1B.toInt()) // 深色半透明
+            setBackgroundColor(0xDD1B1B1B.toInt())
             setPadding(dp(8), dp(4), dp(8), dp(4))
         }
 
-        // 状态条（收起时显示）
+        // 状态条（收起时显示的小胶囊）
         statusBar = TextView(context).apply {
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             maxLines = 1
-            text = "\u25CF 等待中"
-            setPadding(dp(4), dp(2), dp(4), dp(2))
+            text = "\u25CF 待命"
+            setPadding(dp(8), dp(4), dp(8), dp(4))
         }
         rootView.addView(statusBar)
 
@@ -84,25 +89,43 @@ class FloatingLogView(private val context: Context) {
         rootView.addView(logArea)
 
         // 按钮行（展开时显示）
-        val btnRow = LinearLayout(context).apply {
+        btnRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
+            gravity = Gravity.CENTER_HORIZONTAL
             visibility = View.GONE
-            setPadding(0, dp(4), 0, 0)
-            tag = "btnRow"
+            setPadding(0, dp(4), 0, dp(2))
         }
-        val dumpBtn = TextView(context).apply {
-            text = "分析控件"
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setBackgroundColor(0xFF336699.toInt())
-            setPadding(dp(12), dp(4), dp(12), dp(4))
-            setOnClickListener { onDumpClick?.invoke() }
+
+        // 开始按钮
+        startBtn = makeButton("开始", 0xFF2E7D32.toInt()) {
+            onStartClick?.invoke()
+        }
+        btnRow.addView(startBtn)
+        addSpacer(btnRow, dp(6))
+
+        // 停止按钮
+        stopBtn = makeButton("停止", 0xFFC62828.toInt()) {
+            onStopClick?.invoke()
+        }
+        btnRow.addView(stopBtn)
+        addSpacer(btnRow, dp(6))
+
+        // 分析控件按钮
+        val dumpBtn = makeButton("分析控件", 0xFF336699.toInt()) {
+            onDumpClick?.invoke()
         }
         btnRow.addView(dumpBtn)
+        addSpacer(btnRow, dp(6))
+
+        // 导出按钮
+        val exportBtn = makeButton("导出", 0xFF6A1B9A.toInt()) {
+            onExportClick?.invoke()
+        }
+        btnRow.addView(exportBtn)
+
         rootView.addView(btnRow)
 
-        // 点击切换展开/收起
+        // 点击状态条切换展开/收起
         statusBar.setOnClickListener { toggleExpand() }
 
         // 拖动支持
@@ -116,20 +139,21 @@ class FloatingLogView(private val context: Context) {
             WindowManager.LayoutParams.TYPE_PHONE
 
         params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,  // 不占满屏幕宽度
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
+            gravity = Gravity.TOP or Gravity.END  // 右上角
             x = 0
             y = 0
         }
 
         wm.addView(rootView, params)
         isAttached = true
+        updateButtonState()
     }
 
     fun destroy() {
@@ -151,13 +175,14 @@ class FloatingLogView(private val context: Context) {
                 logLines.removeAt(0)
             }
 
-            // 更新状态条（显示最新一行）
+            // 更新状态条
             val statusIcon = when (currentStatus) {
-                "running" -> "\uD83D\uDFE2" // 绿色圆点
-                "error" -> "\uD83D\uDD34"    // 红色圆点
-                else -> "\uD83D\uDFE1"       // 黄色圆点
+                "running" -> "\uD83D\uDFE2"
+                "error" -> "\uD83D\uDD34"
+                "waiting" -> "\uD83D\uDFE1"
+                else -> "\u26AA"  // 灰色圆点 = stopped
             }
-            statusBar.text = "$statusIcon ${line.take(60)}"
+            statusBar.text = "$statusIcon ${line.take(40)}"
 
             // 更新日志区
             val recentLines = logLines.takeLast(20)
@@ -167,19 +192,33 @@ class FloatingLogView(private val context: Context) {
     }
 
     /**
-     * 设置状态
+     * 设置状态并更新按钮可用性
      */
     fun setStatus(status: String) {
         currentStatus = status
+        handler.post { updateButtonState() }
+    }
+
+    private fun updateButtonState() {
+        val isActive = currentStatus == "running" || currentStatus == "waiting"
+        startBtn.alpha = if (isActive) 0.4f else 1.0f
+        startBtn.isClickable = !isActive
+        stopBtn.alpha = if (isActive) 1.0f else 0.4f
+        stopBtn.isClickable = isActive
     }
 
     private fun toggleExpand() {
         isExpanded = !isExpanded
         val vis = if (isExpanded) View.VISIBLE else View.GONE
         logArea.visibility = vis
-        // 按钮行跟随展开/收起
-        rootView.findViewWithTag<View>("btnRow")?.visibility = vis
-        // 更新布局
+        btnRow.visibility = vis
+
+        // 展开时宽度撑满，收起时自适应
+        params.width = if (isExpanded)
+            WindowManager.LayoutParams.MATCH_PARENT
+        else
+            WindowManager.LayoutParams.WRAP_CONTENT
+
         if (isAttached) wm.updateViewLayout(rootView, params)
     }
 
@@ -208,7 +247,7 @@ class FloatingLogView(private val context: Context) {
                         isDragging = true
                     }
                     if (isDragging) {
-                        params.x = startParamX + dx.toInt()
+                        params.x = startParamX - dx.toInt()  // END gravity 方向相反
                         params.y = startParamY + dy.toInt()
                         if (isAttached) wm.updateViewLayout(rootView, params)
                     }
@@ -216,7 +255,6 @@ class FloatingLogView(private val context: Context) {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!isDragging) {
-                        // 非拖动，触发点击
                         toggleExpand()
                     }
                     true
@@ -224,6 +262,23 @@ class FloatingLogView(private val context: Context) {
                 else -> false
             }
         }
+    }
+
+    private fun makeButton(text: String, bgColor: Int, onClick: () -> Unit): TextView {
+        return TextView(context).apply {
+            this.text = text
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setBackgroundColor(bgColor)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun addSpacer(parent: LinearLayout, width: Int) {
+        parent.addView(View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(width, 1)
+        })
     }
 
     private fun dp(value: Int): Int {
