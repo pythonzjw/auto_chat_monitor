@@ -2,3 +2,19 @@ data/
 *.apk
 node_modules/
 .DS_Store
+
+# Android
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 签名文件
+*.keystore
+*.jks
+keystore_base64.txt

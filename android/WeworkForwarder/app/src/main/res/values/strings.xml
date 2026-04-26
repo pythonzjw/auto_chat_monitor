@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">企微消息转发</string>
+    <string name="accessibility_service_description">监控企业微信消息并自动转发到指定群聊。需要读取企业微信的界面内容和执行点击、滑动等操作。</string>
+</resources>

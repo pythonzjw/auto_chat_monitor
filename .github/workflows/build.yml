@@ -15,148 +15,98 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
           java-version: '17'
+          distribution: 'temurin'
 
-      - name: Download AutoJs6 APK 和 inrt 模板
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # 1. 下载完整 IDE APK（ApkBuilder 需要从中提取 assets/template.apk）
-          wget -q "https://github.com/SuperMonster003/AutoJs6/releases/download/v6.7.0/autojs6-v6.7.0-universal-047ae62e.apk" -O autojs6.apk
-          ls -lh autojs6.apk
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-          # 2. 下载自编译的 inrt APK（classes.dex 和 assets/modules/ 版本一致）
-          gh release download "inrt-template-v6.7.0" \
-            --repo "${{ github.repository }}" \
-            --pattern "autojs6-inrt-v6.7.0.apk" \
-            --output autojs6-inrt.apk
-          ls -lh autojs6-inrt.apk
-
-          # 3. 将自编译的 inrt APK 替换 app APK 中内嵌的 template.apk
-          #    ApkBuilder 会从 autojs6.apk 提取 assets/template.apk 作为构建基础
-          #    替换后 template.apk 就是我们自编译的 inrt（BuildConfig.isInrt=true）
-          mkdir -p assets && cp autojs6-inrt.apk assets/template.apk
-          zip -u autojs6.apk "assets/template.apk"
-          rm -rf assets
-
-      - name: Download ApkBuilder CLI
-        run: |
-          wget -q "https://github.com/Steven-Qiang/AutoJs6-ApkBuilder/releases/download/v1.1.0/apkbuilder-cli.jar" -O apkbuilder-cli.jar
-          ls -lh apkbuilder-cli.jar
-
-      - name: Build APK
-        run: |
-          java -jar apkbuilder-cli.jar \
-            -a autojs6.apk \
-            -s . \
-            -o wework-collector.apk
-
-      - name: Fix APK (native libs + plaintext JS + re-sign)
+      - name: Prepare keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          KS_PATH="$GITHUB_WORKSPACE/release.keystore"
 
-          # ===== 1. 注入 native library（从完整 IDE APK 提取，inrt 不含 .so） =====
-          unzip -o autojs6.apk "lib/*" -d template_libs/
-          cd template_libs
-          find lib -name "*.so" -exec zip -u -0 ../wework-collector.apk {} +
-          cd ..
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KS_PATH"
+            # 自动检测 alias
+            ALIAS=$(keytool -list -keystore "$KS_PATH" -storepass "$KEYSTORE_PASSWORD" 2>/dev/null \
+              | grep "PrivateKeyEntry\|SecretKeyEntry" | head -1 | cut -d',' -f1 | xargs)
+            if [ -z "$ALIAS" ]; then
+              echo "无法从已有 keystore 中检测到 alias，重新生成"
+              rm -f "$KS_PATH"
+            else
+              echo "KEY_ALIAS=$ALIAS" >> $GITHUB_ENV
+              echo "检测到 alias: $ALIAS"
+              exit 0
+            fi
+          fi
 
-          # ===== 2. 用明文 JS 替换 ApkBuilder 加密的 JS（修复解密失败） =====
-          # ApkBuilder 做了两件事：
-          #   a) 把用户脚本加密后放到 assets/project/{main.js,config.js,modules/*.js}
-          #   b) 把模板 APK 的整个 assets/ 拷贝到 assets/project/temp/assets/
-          # 所以不能用通配符 "assets/project/*.js"（会递归删除 temp/ 下 140+ 个文件）
-          #
-          # 策略：精确删除 → 清理 temp → 写入明文 → 恢复引擎文件
+          # 生成新 keystore
+          keytool -genkeypair \
+            -alias wework \
+            -keyalg RSA -keysize 2048 -validity 36500 \
+            -keystore "$KS_PATH" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -keypass "$KEYSTORE_PASSWORD" \
+            -dname "CN=WeworkForwarder, O=Dev, C=CN" \
+            -noprompt
+          echo "KEY_ALIAS=wework" >> $GITHUB_ENV
+          echo "生成新 keystore，alias=wework"
 
-          # 2a. 精确删除 ApkBuilder 加密的用户脚本（逐个列出，不用通配符）
-          zip -d wework-collector.apk \
-            "assets/project/main.js" \
-            "assets/project/config.js" \
-            "assets/project/inspect.js" \
-            "assets/project/modules/collector.js" \
-            "assets/project/modules/forwarder.js" \
-            "assets/project/modules/navigator.js" \
-            "assets/project/modules/ocr.js" \
-            "assets/project/modules/storage.js" \
-            "assets/project/modules/utils.js" \
-            || true
+          # 重要：将新 keystore 的 base64 输出，方便用户保存到 Secret
+          echo "==== 请将以下内容保存到 GitHub Secret KEYSTORE_BASE64 以保持签名一致 ===="
+          base64 "$KS_PATH" | head -5
+          echo "... (截断显示)"
 
-          # 2b. 删除 ApkBuilder 拷贝的无用模板副本（整个 temp 目录）
-          zip -d wework-collector.apk "assets/project/temp/*" || true
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+        working-directory: android/WeworkForwarder
 
-          # 2c. 写入明文 JS 源码（路径必须是 assets/project/... 才能被 AutoJs6 识别）
-          mkdir -p assets/project/modules
-          cp main.js config.js project.json assets/project/
-          cp modules/*.js assets/project/modules/
-          [ -f inspect.js ] && cp inspect.js assets/project/
-          find assets/project -type f -exec zip wework-collector.apk {} +
-
-          # 2d. 从自编译 inrt APK 恢复引擎内部文件（assets/modules/ 等）
-          # 必须用 inrt APK（和 classes.dex 同源编译），不能用 app APK
-          # 之前用 app APK 的 assets/modules/ 导致 ScriptRuntime 崩溃
-          unzip -o autojs6-inrt.apk "assets/modules/*" "assets/init.js" "assets/js-beautify/*" "assets/web/*" -d template_assets/ 2>/dev/null || true
-          cd template_assets
-          find assets -type f -exec zip ../wework-collector.apk {} +
-          cd ..
-
-          # 2e. 验证关键文件
-          echo "=== 用户脚本 ==="
-          zipinfo wework-collector.apk "assets/project/main.js" "assets/project/config.js" "assets/project/modules/utils.js" 2>/dev/null || true
-          echo "=== 引擎核心模块 ==="
-          zipinfo wework-collector.apk "assets/modules/object-observe-lite.min.js" "assets/modules/internal.js" "assets/init.js" 2>/dev/null || true
-          echo "=== 确认 temp 已清理 ==="
-          zipinfo wework-collector.apk "assets/project/temp/*" 2>/dev/null && echo "WARNING: temp still exists!" || echo "OK: temp cleaned"
-
-          # ===== 3. 删除旧签名 =====
-          zip -d wework-collector.apk "META-INF/*" || true
-
-          # ===== 4. 页面对齐 =====
-          ${BUILD_TOOLS}zipalign -p -f 4 wework-collector.apk wework-collector-aligned.apk
-          mv wework-collector-aligned.apk wework-collector.apk
-
-          # ===== 5. 用固定 keystore 签名（支持覆盖安装） =====
-          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
-          ${BUILD_TOOLS}apksigner sign \
-            --ks release.keystore \
-            --ks-pass "pass:$KEYSTORE_PASSWORD" \
-            --key-pass "pass:$KEYSTORE_PASSWORD" \
-            wework-collector.apk
-
-          echo "修复完成"
+      - name: Build APK
+        working-directory: android/WeworkForwarder
+        env:
+          KEYSTORE_FILE: ${{ github.workspace }}/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ env.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: ./gradlew assembleRelease
 
       - name: Verify APK
         run: |
-          ls -lh wework-collector.apk
-          file wework-collector.apk
+          APK_PATH="android/WeworkForwarder/app/build/outputs/apk/release/app-release.apk"
+          ls -lh "$APK_PATH"
 
       - name: Create Release and Upload APK
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG_NAME="${GITHUB_REF#refs/tags/}"
+          APK_PATH="android/WeworkForwarder/app/build/outputs/apk/release/app-release.apk"
+          cp "$APK_PATH" wework-forwarder.apk
+
           gh release create "$TAG_NAME" \
-            --title "企微消息采集 $TAG_NAME" \
-            --notes "## 企微消息采集转发工具
+            --title "企微消息转发 $TAG_NAME" \
+            --notes "## 企微消息采集转发工具（原生 Android 版）
 
           ### 安装说明
-          1. 下载 \`wework-collector.apk\` 安装到 Android 手机
-          2. 授予**无障碍服务**权限和**悬浮窗**权限
-          3. 打开应用，点击[启动]，首次运行弹窗填写群信息
-          4. 配置自动保存，下次启动直接运行
+          1. 下载 \`wework-forwarder.apk\` 安装到 Android 手机
+          2. 打开应用，点击「去开启」进入无障碍服务设置
+          3. 找到「企微消息转发」并开启
+          4. 返回应用，填写源群名称和目标群名称
+          5. 点击「启动采集」
 
           ### 前提条件
           - 企业微信已登录
           - 手机屏幕保持常亮
-          - 已授予无障碍服务权限和悬浮窗权限
+          - 已授予无障碍服务权限
 
           ### 更新日志
-          - 自动构建版本 $TAG_NAME" \
-            wework-collector.apk
+          - 原生 Android 重构版本 $TAG_NAME
+          - 标准 Gradle 构建，APK 约 5MB
+          - AccessibilityService 直接读取控件树" \
+            wework-forwarder.apk
