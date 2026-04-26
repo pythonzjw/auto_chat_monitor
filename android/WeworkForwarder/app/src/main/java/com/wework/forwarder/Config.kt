@@ -27,7 +27,6 @@ object Config {
     const val BATCH_SIZE = 9
 
     // ===== 存储配置 =====
-    const val DATA_DIR = "/sdcard/wework-collector/"
     const val MESSAGE_FILE = "messages.json"
     const val FINGERPRINT_FILE = "fingerprints.json"
     const val BOOKMARK_FILE = "bookmark.json"

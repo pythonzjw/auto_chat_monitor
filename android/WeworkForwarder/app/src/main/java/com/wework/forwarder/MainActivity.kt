@@ -14,7 +14,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import java.io.File
 
 /**
  * 主界面
@@ -39,10 +38,14 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // 初始化存储（必须最先调用）
+        Storage.init(this)
+
         initViews()
         loadConfig()
         setupButtons()
         setupLogCallback()
+        loadHistoryLogs()
     }
 
     override fun onResume() {
@@ -65,7 +68,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadConfig() {
-        Storage.loadUserConfig()
+        Storage.loadUserConfig(this)
         etSourceGroup.setText(Config.sourceGroup)
         etTargetGroups.setText(Config.targetGroups.joinToString(","))
         etLookback.setText(Config.lookbackMinutes.toString())
@@ -199,6 +202,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 从日志文件加载历史日志（App 启动时恢复上次日志）
+     */
+    private fun loadHistoryLogs() {
+        val recentLogs = Storage.readRecentLogs(150)
+        if (recentLogs.isNotEmpty()) {
+            tvLog.text = recentLogs.joinToString("\n")
+            scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
+        }
+    }
+
+    /**
      * dump 当前企业微信 UI 控件树（调试用）
      */
     private fun dumpUiTree() {
@@ -228,21 +242,18 @@ class MainActivity : AppCompatActivity() {
             appendLine("==============================")
         }
 
-        // 保存到文件
-        try {
-            val dir = File(Config.DATA_DIR)
-            if (!dir.exists()) dir.mkdirs()
-            val file = File(Config.DATA_DIR + "ui_dump_${System.currentTimeMillis()}.txt")
-            file.writeText(header + dump)
-            appendLog("控件树已保存到: ${file.absolutePath}")
+        // 保存到内部存储
+        val filename = "ui_dump_${System.currentTimeMillis()}.txt"
+        val path = Storage.saveDump(filename, header + dump)
+        if (path != null) {
+            appendLog("控件树已保存: $filename")
             Toast.makeText(this, "控件树已保存", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            appendLog("保存控件树失败: ${e.message}")
+        } else {
+            appendLog("保存控件树失败")
         }
 
         // 显示到日志区域
         appendLog("--- 控件树 ---")
-        // 只显示前 100 行
         val lines = dump.split("\n")
         val preview = if (lines.size > 100) lines.take(100).joinToString("\n") + "\n... (共${lines.size}行)" else dump
         appendLog(preview)

@@ -1,5 +1,6 @@
 package com.wework.forwarder
 
+import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -11,7 +12,7 @@ import java.util.Locale
 /**
  * 本地存储模块
  *
- * 负责消息持久化、指纹去重、书签管理、用户配置
+ * 使用 App 内部存储（context.filesDir），无需额外存储权限
  */
 object Storage {
     private const val TAG = "Storage"
@@ -23,12 +24,16 @@ object Storage {
     private var messages: MutableList<Message> = mutableListOf()
     private var bookmark: Bookmark? = null
 
+    /** App 内部存储根目录，由 init(context) 设置 */
+    private lateinit var dataDir: File
+
     /**
-     * 初始化存储目录和文件
+     * 初始化存储（必须传入 Context）
      */
-    fun init() {
-        val dir = File(Config.DATA_DIR)
-        if (!dir.exists()) dir.mkdirs()
+    fun init(context: Context) {
+        dataDir = File(context.filesDir, "wework-collector")
+        if (!dataDir.exists()) dataDir.mkdirs()
+        Log.i(TAG, "存储目录: ${dataDir.absolutePath}")
 
         // 加载指纹
         loadFile<MutableMap<String, String>>(Config.FINGERPRINT_FILE)?.let {
@@ -51,6 +56,15 @@ object Storage {
         Log.i(TAG, "存储模块初始化完成")
     }
 
+    /**
+     * 兼容旧的无参 init()
+     */
+    fun init() {
+        if (!::dataDir.isInitialized) {
+            Log.w(TAG, "Storage.init() 未传入 Context，跳过")
+        }
+    }
+
     // ===== 书签管理 =====
 
     fun saveBookmark(sender: String, content: String, time: String) {
@@ -65,9 +79,6 @@ object Storage {
 
     fun getBookmark(): Bookmark? = bookmark
 
-    /**
-     * 检查消息是否匹配书签
-     */
     fun matchesBookmark(sender: String?, content: String?): Boolean {
         val bm = bookmark ?: return false
         return (sender ?: "") == bm.sender && (content ?: "").take(30) == bm.content
@@ -82,9 +93,6 @@ object Storage {
         saveFile(Config.FINGERPRINT_FILE, fingerprints)
     }
 
-    /**
-     * 清理过期指纹（超过7天的）
-     */
     fun cleanOldFingerprints() {
         val cutoff = Date(System.currentTimeMillis() - 7 * 24 * 60 * 60 * 1000L)
         val cutoffStr = dateFormat.format(cutoff)
@@ -108,9 +116,31 @@ object Storage {
 
     // ===== 用户配置 =====
 
-    fun loadUserConfig(): Boolean {
+    fun loadUserConfig(context: Context): Boolean {
+        if (!::dataDir.isInitialized) {
+            dataDir = File(context.filesDir, "wework-collector")
+            if (!dataDir.exists()) dataDir.mkdirs()
+        }
         return try {
-            val file = File(Config.DATA_DIR + Config.USER_CONFIG_FILE)
+            val file = File(dataDir, Config.USER_CONFIG_FILE)
+            if (!file.exists()) return false
+            val config = gson.fromJson(file.readText(), UserConfig::class.java) ?: return false
+            Config.sourceGroup = config.sourceGroup ?: ""
+            Config.targetGroups = config.targetGroups ?: emptyList()
+            Config.lookbackMinutes = config.lookbackMinutes ?: 10
+            Config.pollIntervalSeconds = config.pollIntervalSeconds ?: 30
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "加载用户配置失败: ${e.message}")
+            false
+        }
+    }
+
+    /** 兼容旧的无参版本 */
+    fun loadUserConfig(): Boolean {
+        if (!::dataDir.isInitialized) return false
+        return try {
+            val file = File(dataDir, Config.USER_CONFIG_FILE)
             if (!file.exists()) return false
             val config = gson.fromJson(file.readText(), UserConfig::class.java) ?: return false
             Config.sourceGroup = config.sourceGroup ?: ""
@@ -134,26 +164,75 @@ object Storage {
         saveFile(Config.USER_CONFIG_FILE, config)
     }
 
+    // ===== 日志文件 =====
+
+    /**
+     * 追加一行日志到文件
+     */
+    fun appendLogLine(line: String) {
+        try {
+            if (!::dataDir.isInitialized) return
+            val file = File(dataDir, Config.LOG_FILE)
+            file.appendText(line + "\n")
+            // 日志文件超过 500KB 时截断保留后半部分
+            if (file.length() > 500 * 1024) {
+                val lines = file.readLines()
+                val keep = lines.takeLast(lines.size / 2)
+                file.writeText(keep.joinToString("\n") + "\n")
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * 读取最近的日志行
+     */
+    fun readRecentLogs(maxLines: Int = 100): List<String> {
+        return try {
+            if (!::dataDir.isInitialized) return emptyList()
+            val file = File(dataDir, Config.LOG_FILE)
+            if (!file.exists()) return emptyList()
+            file.readLines().takeLast(maxLines)
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * 保存 dump 文件（诊断用）
+     */
+    fun saveDump(filename: String, content: String): String? {
+        return try {
+            if (!::dataDir.isInitialized) return null
+            val file = File(dataDir, filename)
+            file.writeText(content)
+            file.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "保存 dump 失败: ${e.message}")
+            null
+        }
+    }
+
     // ===== 工具方法 =====
 
     fun now(): String = dateFormat.format(Date())
 
-    /**
-     * 生成消息指纹（用于去重）
-     */
     fun fingerprint(sender: String?, time: String?, content: String?): String {
         val key = "${sender ?: ""}|${time ?: ""}|${(content ?: "").take(30)}"
         var hash = 0
         for (ch in key) {
             hash = ((hash shl 5) - hash) + ch.code
-            hash = hash and hash // 转为 32 位整数
+            hash = hash and hash
         }
         return hash.toString(36)
     }
 
+    fun getDataDir(): File? = if (::dataDir.isInitialized) dataDir else null
+
     private inline fun <reified T> loadFile(filename: String): T? {
         return try {
-            val file = File(Config.DATA_DIR + filename)
+            if (!::dataDir.isInitialized) return null
+            val file = File(dataDir, filename)
             if (!file.exists()) return null
             gson.fromJson(file.readText(), object : TypeToken<T>() {}.type)
         } catch (e: Exception) {
@@ -164,8 +243,8 @@ object Storage {
 
     private fun saveFile(filename: String, data: Any?) {
         try {
-            val file = File(Config.DATA_DIR + filename)
-            file.parentFile?.mkdirs()
+            if (!::dataDir.isInitialized) return
+            val file = File(dataDir, filename)
             file.writeText(gson.toJson(data))
         } catch (e: Exception) {
             Log.e(TAG, "保存 $filename 失败: ${e.message}")

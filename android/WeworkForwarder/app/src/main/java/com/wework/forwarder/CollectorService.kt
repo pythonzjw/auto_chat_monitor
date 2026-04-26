@@ -57,12 +57,16 @@ class CollectorService : Service() {
             Log.w(TAG, "没有悬浮窗权限，跳过创建悬浮窗")
         }
 
-        // 设置全局 uiLog 回调：同时输出到 Activity + 悬浮窗
+        // 初始化存储（必须在 uiLog 之前，以便写日志文件）
+        Storage.init(this)
+
+        // 设置全局 uiLog 回调：同时输出到 Activity + 悬浮窗 + 日志文件
         Config.uiLog = { msg ->
             val line = "[${Storage.now()}] $msg"
             Log.i(TAG, msg)
             logCallback?.invoke(line)
             floatingLog?.appendLog(msg)
+            Storage.appendLogLine(line)
         }
     }
 
@@ -120,9 +124,6 @@ class CollectorService : Service() {
         log("回溯: ${Config.lookbackMinutes} 分钟")
         log("轮询间隔: ${Config.pollIntervalSeconds} 秒")
         log("========================================")
-
-        // 初始化存储
-        Storage.init()
 
         // 确保企业微信在前台
         if (!Navigator.ensureWeWorkForeground(service)) {
@@ -236,6 +237,7 @@ class CollectorService : Service() {
         Log.i(TAG, msg)
         logCallback?.invoke(line)
         floatingLog?.appendLog(msg)
+        Storage.appendLogLine(line)
     }
 
     private fun createNotificationChannel() {

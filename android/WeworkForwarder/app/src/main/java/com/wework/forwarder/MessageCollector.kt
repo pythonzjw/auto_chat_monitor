@@ -29,16 +29,29 @@ object MessageCollector {
             return emptyList()
         }
 
+        // 获取屏幕尺寸（用于限定扫描范围）
+        val screenWidth = service.resources.displayMetrics.widthPixels
+        val screenHeight = service.resources.displayMetrics.heightPixels
+
         // 策略1：通过消息容器结构采集
         var messages = collectByStructure(root)
 
         if (messages.isEmpty()) {
-            log("[采集] 控件结构采集失败，尝试文本节点采集...")
-            // 策略2：直接采集所有文本节点
-            messages = collectByTextNodes(root)
+            if (Config.debug) log("[采集] 控件结构采集失败，尝试文本节点采集...")
+            // 策略2：直接采集所有文本节点（限定范围）
+            messages = collectByTextNodes(root, screenWidth, screenHeight)
         }
 
-        if (Config.debug) log("[采集] 屏幕可见 ${messages.size} 条消息")
+        // 输出采集摘要
+        log("[采集] 屏幕可见 ${messages.size} 条消息")
+        for ((i, msg) in messages.withIndex()) {
+            if (i < 5 || i >= messages.size - 2) {
+                log("[采集] #${i + 1} ${msg.sender}: ${msg.content.take(30)}")
+            } else if (i == 5) {
+                log("[采集] ... 省略中间 ${messages.size - 7} 条 ...")
+            }
+        }
+
         return messages
     }
 
@@ -47,7 +60,7 @@ object MessageCollector {
      */
     fun hasNewMessages(service: WeWorkAccessibilityService): Boolean {
         val bookmark = Storage.getBookmark() ?: run {
-            log("[采集] 没有书签记录，认为有新消息")
+            log("[采集] 没有书签，认为有新消息")
             return true
         }
 
@@ -58,24 +71,18 @@ object MessageCollector {
         }
 
         if (Storage.matchesBookmark(lastMsg.sender, lastMsg.content)) {
-            if (Config.debug) Log.d(TAG, "最后一条消息和书签一致，没有新消息")
+            if (Config.debug) Log.d(TAG, "最后一条和书签一致，没有新消息")
             return false
         }
 
-        log("[采集] 发现新消息，最后一条: ${lastMsg.sender}: ${lastMsg.content.take(30)}")
+        log("[采集] 发现新消息")
         return true
     }
 
-    /**
-     * 获取屏幕上最后一条消息
-     */
     fun getLastMessage(service: WeWorkAccessibilityService): Storage.Message? {
         return collectVisibleMessages(service).lastOrNull()
     }
 
-    /**
-     * 在屏幕上查找书签消息
-     */
     fun findBookmarkOnScreen(service: WeWorkAccessibilityService): BookmarkResult? {
         val bookmark = Storage.getBookmark() ?: return null
         val messages = collectVisibleMessages(service)
@@ -87,23 +94,17 @@ object MessageCollector {
         return null
     }
 
-    /**
-     * 向上滚动查找书签消息
-     */
     fun scrollUpToBookmark(service: WeWorkAccessibilityService, metrics: DisplayMetrics, maxScrolls: Int = 30): BookmarkResult? {
         for (i in 0 until maxScrolls) {
+            if (!CollectorService.isRunning) return null
             val result = findBookmarkOnScreen(service)
             if (result != null) return result
-            if (Config.debug) Log.d(TAG, "书签不在当前屏幕，向上滚动 (${i + 1}/$maxScrolls)")
             GestureHelper.swipeUp(service, metrics)
         }
-        log("[采集] 滚动 $maxScrolls 次仍未找到书签")
+        log("[采集] 滚动 $maxScrolls 次未找到书签")
         return null
     }
 
-    /**
-     * 获取书签之后的第一条新消息
-     */
     fun getFirstNewMessage(service: WeWorkAccessibilityService): Storage.Message? {
         val bookmark = Storage.getBookmark()
         val messages = collectVisibleMessages(service)
@@ -116,7 +117,6 @@ object MessageCollector {
                 return if (i + 1 < messages.size) messages[i + 1] else null
             }
         }
-        // 书签不在当前屏幕
         return messages.firstOrNull()
     }
 
@@ -129,19 +129,19 @@ object MessageCollector {
         // 通过消息内容文本查找
         if (msg.content.isNotEmpty() && msg.content != "[图片]" && msg.content != "[文件]") {
             NodeFinder.findByText(root, msg.content)?.let {
-                log("[采集] 通过消息内容定位到控件")
+                log("[采集] 通过内容定位到控件")
                 return it
             }
             if (msg.content.length > 20) {
                 NodeFinder.findByTextContains(root, msg.content.take(20))?.let {
-                    log("[采集] 通过消息内容（前20字）定位到控件")
+                    log("[采集] 通过内容(前20字)定位到控件")
                     return it
                 }
             }
         }
 
         // 通过发送人名字定位
-        if (msg.sender.isNotEmpty() && msg.sender != "未知" && msg.sender != "系统") {
+        if (msg.sender.isNotEmpty() && msg.sender != "未知" && msg.sender != "系统" && msg.sender != "我") {
             val senderNode = NodeFinder.findByText(root, msg.sender)
             if (senderNode != null) {
                 val parent = senderNode.parent
@@ -149,14 +149,14 @@ object MessageCollector {
                     val texts = NodeFinder.getAllTexts(parent)
                     val contentNode = texts.firstOrNull { it.text != msg.sender }
                     if (contentNode != null) {
-                        log("[采集] 通过发送人定位到消息控件")
+                        log("[采集] 通过发送人定位到控件")
                         return NodeFinder.findByText(parent, contentNode.text)
                     }
                 }
             }
         }
 
-        log("[采集] ✗ 无法定位消息控件 (发送人=${msg.sender}, 内容=${msg.content.take(20)})")
+        log("[采集] ✗ 无法定位控件 (${msg.sender}: ${msg.content.take(20)})")
         return null
     }
 
@@ -169,58 +169,41 @@ object MessageCollector {
         val messages = mutableListOf<Storage.Message>()
         var currentTime = ""
 
-        // 找聊天列表容器
         val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
             ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
             ?: NodeFinder.findByClassName(root, "android.widget.AbsListView")
         if (chatList == null) {
-            if (Config.debug) log("[采集] 找不到聊天列表容器(ListView/RecyclerView)")
+            if (Config.debug) Log.d(TAG, "找不到聊天列表容器")
             return messages
         }
 
         val childCount = chatList.childCount
-        if (Config.debug) Log.d(TAG, "聊天列表子节点数: $childCount")
-
         for (i in 0 until childCount) {
             val child = chatList.getChild(i) ?: continue
             val msgInfo = parseMessageNode(child, currentTime)
             if (msgInfo != null) {
-                if (msgInfo.isTimeLabel) {
-                    currentTime = msgInfo.time
-                } else {
-                    messages.add(msgInfo.toMessage())
-                }
+                if (msgInfo.isTimeLabel) currentTime = msgInfo.time
+                else messages.add(msgInfo.toMessage())
             }
         }
         return messages
     }
 
-    /**
-     * 解析单个消息节点
-     */
     private fun parseMessageNode(node: AccessibilityNodeInfo, currentTime: String): ParsedNode? {
         val texts = NodeFinder.getAllTexts(node)
 
         if (texts.isEmpty()) {
-            // 检查是否有图片
             val hasImage = NodeFinder.findByClassName(node, "android.widget.ImageView")
-            if (hasImage != null) {
-                return ParsedNode(sender = "未知", time = currentTime, content = "[图片]", type = "image")
-            }
+            if (hasImage != null) return ParsedNode(sender = "未知", time = currentTime, content = "[图片]", type = "image")
             return null
         }
 
-        // 判断时间标签
-        if (texts.size == 1 && isTimeLabel(texts[0].text)) {
+        if (texts.size == 1 && isTimeLabel(texts[0].text))
             return ParsedNode(isTimeLabel = true, time = texts[0].text)
-        }
 
-        // 判断系统消息
-        if (texts.size == 1 && isSystemMessage(texts[0].text)) {
+        if (texts.size == 1 && isSystemMessage(texts[0].text))
             return ParsedNode(sender = "系统", time = currentTime, content = texts[0].text, type = "system")
-        }
 
-        // 解析发送人和内容
         val sender: String
         val content: String
         var type = "text"
@@ -233,41 +216,46 @@ object MessageCollector {
             content = texts[0].text
         }
 
-        if (content.contains("[文件]") || NodeFinder.findByDesc(node, "文件") != null) {
-            type = "file"
-        } else if (content.contains("[链接]") || content.contains("http")) {
-            type = "link"
-        } else if (content.isEmpty() && NodeFinder.findByClassName(node, "android.widget.ImageView") != null) {
+        if (content.contains("[文件]") || NodeFinder.findByDesc(node, "文件") != null) type = "file"
+        else if (content.contains("[链接]") || content.contains("http")) type = "link"
+        else if (content.isEmpty() && NodeFinder.findByClassName(node, "android.widget.ImageView") != null)
             return ParsedNode(sender = sender, time = currentTime, content = "[图片]", type = "image")
-        }
 
         if (content.isEmpty() && sender.isEmpty()) return null
         return ParsedNode(sender = sender, time = currentTime, content = content, type = type)
     }
 
     /**
-     * 策略2：通过所有文本节点推断消息
+     * 策略2：通过所有文本节点推断消息（限定屏幕范围）
      */
-    private fun collectByTextNodes(root: AccessibilityNodeInfo): List<Storage.Message> {
+    private fun collectByTextNodes(root: AccessibilityNodeInfo, screenWidth: Int, screenHeight: Int): List<Storage.Message> {
         val messages = mutableListOf<Storage.Message>()
         val allTextViews = NodeFinder.findAllByClassName(root, "android.widget.TextView")
         if (allTextViews.isEmpty()) {
-            log("[采集] 屏幕上没有任何 TextView")
+            log("[采集] 屏幕上没有 TextView")
             return messages
         }
 
-        if (Config.debug) Log.d(TAG, "屏幕上文本节点总数: ${allTextViews.size}")
+        // 限定扫描范围：排除标题栏(上方15%)和底部输入区(下方12%)
+        val yMin = (screenHeight * 0.15).toInt()
+        val yMax = (screenHeight * 0.88).toInt()
+        val halfWidth = screenWidth / 2
 
-        // 收集所有有文本的 TextView 及其坐标
         val textItems = allTextViews.mapNotNull { tv ->
             val text = tv.text?.toString()?.trim() ?: return@mapNotNull null
             if (text.isEmpty()) return@mapNotNull null
             val rect = Rect()
             tv.getBoundsInScreen(rect)
+            // 过滤掉标题栏和底部区域的文本
+            if (rect.centerY() < yMin || rect.centerY() > yMax) return@mapNotNull null
+            // 过滤掉明显不是消息的文本
+            if (isUiElement(text)) return@mapNotNull null
             NodeFinder.TextNode(text, rect)
         }.sortedBy { it.bounds.centerY() }
 
-        // 按 Y 坐标临近度分组
+        if (Config.debug) Log.d(TAG, "有效文本节点: ${textItems.size} (屏幕范围 Y:$yMin-$yMax)")
+
+        // 按 Y 坐标分组
         var currentTime = ""
         val groups = groupByProximity(textItems, 60)
 
@@ -283,16 +271,32 @@ object MessageCollector {
                 }
             }
 
+            // 根据 X 坐标判断是自己发的（右侧）还是别人发的（左侧）
+            val avgX = group.map { it.bounds.centerX() }.average().toInt()
+            val isRightSide = avgX > halfWidth
+
             if (group.size >= 2) {
-                messages.add(Storage.Message(
-                    sender = group[0].text,
-                    time = currentTime,
-                    content = group.drop(1).joinToString(" ") { it.text },
-                    type = "text"
-                ))
+                if (isRightSide) {
+                    // 右侧消息：自己发的，没有发送人名字
+                    // 所有文本都是消息内容
+                    messages.add(Storage.Message(
+                        sender = "我",
+                        time = currentTime,
+                        content = group.joinToString(" ") { it.text },
+                        type = "text"
+                    ))
+                } else {
+                    // 左侧消息：第一个文本是发送人
+                    messages.add(Storage.Message(
+                        sender = group[0].text,
+                        time = currentTime,
+                        content = group.drop(1).joinToString(" ") { it.text },
+                        type = "text"
+                    ))
+                }
             } else if (group.size == 1) {
                 messages.add(Storage.Message(
-                    sender = "未知",
+                    sender = if (isRightSide) "我" else "未知",
                     time = currentTime,
                     content = group[0].text,
                     type = "text"
@@ -303,8 +307,18 @@ object MessageCollector {
     }
 
     /**
-     * 将文本节点按 Y 坐标临近度分组
+     * 判断是否是 UI 元素而非消息文本
      */
+    private fun isUiElement(text: String): Boolean {
+        // 过滤群名+成员数格式、常见按钮文字等
+        val uiTexts = setOf("消息", "通讯录", "工作台", "我", "发送", "更多", "返回",
+            "表情", "语音", "文件", "拍摄", "位置", "视频通话", "语音通话")
+        if (text in uiTexts) return true
+        // 群名(N) 格式
+        if (Regex("^.+\\(\\d+\\)$").matches(text)) return true
+        return false
+    }
+
     private fun groupByProximity(items: List<NodeFinder.TextNode>, threshold: Int): List<List<NodeFinder.TextNode>> {
         if (items.isEmpty()) return emptyList()
         val groups = mutableListOf<MutableList<NodeFinder.TextNode>>()
@@ -321,9 +335,6 @@ object MessageCollector {
         return groups
     }
 
-    /**
-     * 判断文本是否是时间标签
-     */
     private fun isTimeLabel(text: String): Boolean {
         return Regex("^\\d{1,2}:\\d{2}$").matches(text)
                 || text.startsWith("昨天")
@@ -334,11 +345,9 @@ object MessageCollector {
                 || Regex("^下午\\s*\\d").containsMatchIn(text)
     }
 
-    /**
-     * 判断是否是系统消息
-     */
     private fun isSystemMessage(text: String): Boolean {
-        val keywords = listOf("加入了群聊", "退出了群聊", "移出了群聊", "修改了群名", "撤回了一条消息", "你已被", "邀请了")
+        val keywords = listOf("加入了群聊", "退出了群聊", "移出了群聊", "修改了群名",
+            "撤回了一条消息", "你已被", "邀请了", "拒绝")
         return keywords.any { text.contains(it) }
     }
 
