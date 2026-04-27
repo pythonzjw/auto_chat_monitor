@@ -243,10 +243,15 @@ object MessageForwarder {
      * 区分方式：取 bounds.centerY 最大的（最靠底部的 = ↑ 向下选方向）
      */
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
+        // 先滑到底部，避免 scrollUpToBookmark 留下的滚动位置导致漏选
+        for (i in 0 until 5) {
+            if (stopped()) return false
+            GestureHelper.swipeDown(service, metrics)
+        }
+
         for (i in 0 until 10) {
             if (stopped()) return false
 
-            // 先检查"选择到这里"是否已经可见（避免不必要的滑动把按钮滑走）
             val btn = findSelectToHereDown(service)
             if (btn != null) {
                 val rect = Rect()
@@ -490,8 +495,8 @@ object MessageForwarder {
             return false
         }
 
-        // 按 left 升序，取第一个（对勾在搜索左边，不尝试后续按钮避免误点搜索）
-        val btn = clickables.minByOrNull { node ->
+        // 取 left 最大的（搜索在对勾左边，对勾在最右边）
+        val btn = clickables.maxByOrNull { node ->
             val rect = Rect()
             node.getBoundsInScreen(rect)
             rect.left
