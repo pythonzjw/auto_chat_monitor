@@ -70,15 +70,26 @@ object MessageCollector {
             return false
         }
 
+        // 消息数增长 → 肯定有新消息（不依赖内容匹配，兼容图片/小程序/链接等）
+        if (messages.size > bookmark.totalParsed) {
+            log("[采集] 消息数增加(${bookmark.totalParsed}→${messages.size})，认为有新消息")
+            return true
+        }
+
         // 在消息列表中从后往前找书签位置
         for (i in messages.indices.reversed()) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content, messages[i].time)) {
+                // Leader-Follower 验证：prevContent 不匹配则继续往上找（防重复内容假阳性）
+                if (bookmark.prevContent.isNotEmpty() && i > 0) {
+                    val prev = messages[i - 1]
+                    if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) {
+                        continue
+                    }
+                }
                 if (i < messages.size - 1) {
-                    // 书签不是最后一条 → 书签后面有新消息
                     log("[采集] 书签在位置 ${i+1}/${messages.size}，后面有 ${messages.size - 1 - i} 条新消息")
                     return true
                 } else {
-                    // 书签是最后一条 → 没有新消息
                     log("[采集] 书签是最后一条(${messages[i].content.take(20)})，暂无新消息")
                     return false
                 }

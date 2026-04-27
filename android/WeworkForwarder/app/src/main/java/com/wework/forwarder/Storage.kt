@@ -67,14 +67,15 @@ object Storage {
 
     // ===== 书签管理 =====
 
-    fun saveBookmark(sender: String, content: String, time: String, prevSender: String = "", prevContent: String = "") {
+    fun saveBookmark(sender: String, content: String, time: String, prevSender: String = "", prevContent: String = "", totalParsed: Int = 0) {
         bookmark = Bookmark(
             sender = sender,
             content = content.take(30),
             time = time,
             savedAt = now(),
             prevSender = prevSender,
-            prevContent = prevContent.take(30)
+            prevContent = prevContent.take(30),
+            totalParsed = totalParsed
         )
         saveFile(Config.BOOKMARK_FILE, bookmark)
     }
@@ -277,7 +278,8 @@ object Storage {
         val time: String = "",
         val savedAt: String = "",
         val prevSender: String = "",
-        val prevContent: String = ""
+        val prevContent: String = "",
+        val totalParsed: Int = 0
     )
 
     data class Message(

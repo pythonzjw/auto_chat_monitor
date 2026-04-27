@@ -264,7 +264,8 @@ class CollectorService : Service() {
                 val prevMsg = if (visibleMsgs.size >= 2) visibleMsgs[visibleMsgs.size - 2] else null
                 Storage.saveBookmark(
                     lastMsg.sender, lastMsg.content, lastMsg.time,
-                    prevMsg?.sender ?: "", prevMsg?.content ?: ""
+                    prevMsg?.sender ?: "", prevMsg?.content ?: "",
+                    visibleMsgs.size
                 )
                 log("已记录初始书签")
             }

@@ -84,13 +84,14 @@ object MessageForwarder {
         }
         log("[转发] 第一条新消息: ${firstNewMsg.sender}: ${firstNewMsg.content.take(30)}")
 
-        // 步骤3：转发前保存书签（同时保存前一条消息用于重复内容去重）
+        // 步骤3：转发前保存书签（同时保存前一条消息+消息总数用于后续检测）
         if (lastMsg != null) {
             val visibleMsgs = MessageCollector.collectVisibleMessages(service)
             val prevMsg = if (visibleMsgs.size >= 2) visibleMsgs[visibleMsgs.size - 2] else null
             Storage.saveBookmark(
                 lastMsg.sender, lastMsg.content, lastMsg.time,
-                prevMsg?.sender ?: "", prevMsg?.content ?: ""
+                prevMsg?.sender ?: "", prevMsg?.content ?: "",
+                visibleMsgs.size
             )
             log("[转发] 步骤3: 书签已更新")
         }
