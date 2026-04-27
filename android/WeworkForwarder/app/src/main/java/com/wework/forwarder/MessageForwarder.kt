@@ -55,10 +55,14 @@ object MessageForwarder {
             if (stopped()) return false
             if (bookmarkInfo != null) {
                 log("[转发] 找到书签(位置${bookmarkInfo.index}/${bookmarkInfo.totalOnScreen})，取第一条新消息...")
-                firstNewMsg = MessageCollector.getFirstNewMessage(service)
+                val visibleMsgs = MessageCollector.collectVisibleMessages(service)
+                firstNewMsg = if (bookmarkInfo.index + 1 < visibleMsgs.size)
+                    visibleMsgs[bookmarkInfo.index + 1] else null
                 if (firstNewMsg == null) {
                     GestureHelper.swipeDown(service, metrics)
-                    firstNewMsg = MessageCollector.getFirstNewMessage(service)
+                    val retryMsgs = MessageCollector.collectVisibleMessages(service)
+                    firstNewMsg = if (bookmarkInfo.index + 1 < retryMsgs.size)
+                        retryMsgs[bookmarkInfo.index + 1] else retryMsgs.firstOrNull()
                 }
             } else {
                 log("[转发] 书签未找到，从当前可见最早消息开始")
@@ -243,16 +247,23 @@ object MessageForwarder {
      * 区分方式：取 bounds.centerY 最大的（最靠底部的 = ↑ 向下选方向）
      */
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
-        // 先滑到底部，避免 scrollUpToBookmark 留下的滚动位置导致漏选
-        for (i in 0 until 5) {
-            if (stopped()) return false
-            GestureHelper.swipeDown(service, metrics)
+        // 场景2：消息少，进入多选后"选择到这里"已在底部可见 → 直接点击
+        var btn = findSelectToHereDown(service)
+        if (btn != null) {
+            val rect = Rect()
+            btn.getBoundsInScreen(rect)
+            log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}，直接点击")
+            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+            GestureHelper.delay(1000)
+            return true
         }
 
+        // 场景1：按钮不可见 → 下滑加载新消息直到按钮出现
         for (i in 0 until 10) {
             if (stopped()) return false
+            GestureHelper.swipeDown(service, metrics)
 
-            val btn = findSelectToHereDown(service)
+            btn = findSelectToHereDown(service)
             if (btn != null) {
                 val rect = Rect()
                 btn.getBoundsInScreen(rect)
@@ -261,9 +272,6 @@ object MessageForwarder {
                 GestureHelper.delay(1000)
                 return true
             }
-
-            // 没找到 → 向下滑动，让更多消息出现
-            GestureHelper.swipeDown(service, metrics)
         }
 
         log("[转发] 未找到'选择到这里'，可能只有一条新消息")

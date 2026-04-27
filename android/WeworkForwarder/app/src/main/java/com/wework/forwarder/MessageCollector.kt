@@ -72,7 +72,7 @@ object MessageCollector {
 
         // 在消息列表中从后往前找书签位置
         for (i in messages.indices.reversed()) {
-            if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
+            if (Storage.matchesBookmark(messages[i].sender, messages[i].content, messages[i].time)) {
                 if (i < messages.size - 1) {
                     // 书签不是最后一条 → 书签后面有新消息
                     log("[采集] 书签在位置 ${i+1}/${messages.size}，后面有 ${messages.size - 1 - i} 条新消息")
@@ -98,7 +98,7 @@ object MessageCollector {
         val bookmark = Storage.getBookmark() ?: return null
         val messages = collectVisibleMessages(service)
         for (i in messages.indices.reversed()) {
-            if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
+            if (Storage.matchesBookmark(messages[i].sender, messages[i].content, messages[i].time)) {
                 return BookmarkResult(index = i, message = messages[i], totalOnScreen = messages.size)
             }
         }
@@ -145,7 +145,7 @@ object MessageCollector {
         if (messages.isEmpty()) return null
         if (bookmark == null) return messages.firstOrNull()
         for (i in messages.indices) {
-            if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
+            if (Storage.matchesBookmark(messages[i].sender, messages[i].content, messages[i].time)) {
                 return if (i + 1 < messages.size) messages[i + 1] else null
             }
         }

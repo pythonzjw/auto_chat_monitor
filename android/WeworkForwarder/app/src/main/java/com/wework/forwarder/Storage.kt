@@ -79,15 +79,19 @@ object Storage {
 
     fun getBookmark(): Bookmark? = bookmark
 
-    fun matchesBookmark(sender: String?, content: String?): Boolean {
+    fun matchesBookmark(sender: String?, content: String?, time: String?): Boolean {
         val bm = bookmark ?: return false
         val c = (content ?: "").take(30)
-        // 精确匹配：sender + content
-        if ((sender ?: "") == bm.sender && c == bm.content) return true
-        // 放宽匹配：只比 content（处理版本升级导致 sender 变化的情况）
+        // 精确匹配：sender + content + time
+        if ((sender ?: "") == bm.sender && c == bm.content) {
+            if (bm.time.isEmpty() || (time ?: "") == bm.time) return true
+        }
+        // 放宽匹配：content + time（sender 可能因版本变化）
         if (c.isNotEmpty() && c == bm.content) {
-            Log.d(TAG, "书签宽松匹配: sender不同(${sender} vs ${bm.sender})，但content一致")
-            return true
+            if (bm.time.isEmpty() || (time ?: "") == bm.time) {
+                Log.d(TAG, "书签宽松匹配: sender不同(${sender} vs ${bm.sender})，但content一致")
+                return true
+            }
         }
         return false
     }
