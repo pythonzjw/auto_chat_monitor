@@ -438,7 +438,7 @@ object MessageCollector {
         }
 
         val yMin = (screenHeight * 0.15).toInt()
-        val yMax = (screenHeight * 0.88).toInt()
+        val yMax = (screenHeight * 0.95).toInt()
         val halfWidth = screenWidth / 2
 
         // 收集聊天区域内的文本节点，排除时间/系统消息/UI元素
