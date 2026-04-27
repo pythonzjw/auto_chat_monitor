@@ -71,7 +71,8 @@ object MessageCollector {
         }
 
         // 消息数增长 → 肯定有新消息（不依赖内容匹配，兼容图片/小程序/链接等）
-        if (messages.size > bookmark.totalParsed) {
+        // 注意：totalParsed==0 说明是旧书签（无此字段），跳过数量检测走内容匹配
+        if (bookmark.totalParsed > 0 && messages.size > bookmark.totalParsed) {
             log("[采集] 消息数增加(${bookmark.totalParsed}→${messages.size})，认为有新消息")
             return true
         }
