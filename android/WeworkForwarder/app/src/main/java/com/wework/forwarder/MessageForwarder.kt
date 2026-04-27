@@ -60,9 +60,10 @@ object MessageForwarder {
                     visibleMsgs[bookmarkInfo.index + 1] else null
                 if (firstNewMsg == null) {
                     GestureHelper.swipeDown(service, metrics)
+                    val retryResult = MessageCollector.findBookmarkOnScreen(service)
                     val retryMsgs = MessageCollector.collectVisibleMessages(service)
-                    firstNewMsg = if (bookmarkInfo.index + 1 < retryMsgs.size)
-                        retryMsgs[bookmarkInfo.index + 1] else retryMsgs.firstOrNull()
+                    firstNewMsg = if (retryResult != null && retryResult.index + 1 < retryMsgs.size)
+                        retryMsgs[retryResult.index + 1] else retryMsgs.firstOrNull()
                 }
             } else {
                 log("[转发] 书签未找到，从当前可见最早消息开始")
