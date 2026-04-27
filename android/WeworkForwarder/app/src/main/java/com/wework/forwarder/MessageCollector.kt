@@ -202,6 +202,32 @@ object MessageCollector {
             }
         }
 
+        // 通用兜底：在 ListView/RecyclerView 中从底部往上搜索包含内容片段的子节点
+        // 兼容小程序/图片/文件/链接/位置等非纯文本消息类型
+        if (msg.content.isNotEmpty()) {
+            val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+                ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+            if (chatList != null) {
+                for (i in chatList.childCount - 1 downTo 0) {
+                    val child = chatList.getChild(i) ?: continue
+                    val allTexts = NodeFinder.getAllTexts(child)
+                    val hasMatch = allTexts.any {
+                        msg.content.contains(it.text.trim()) || it.text.contains(msg.content.trim())
+                    }
+                    if (hasMatch) {
+                        var node: AccessibilityNodeInfo? = child
+                        while (node != null && !node.isClickable) {
+                            node = node.parent
+                        }
+                        if (node != null) {
+                            log("[采集] 通过子节点文本匹配定位到消息控件")
+                            return node
+                        }
+                    }
+                }
+            }
+        }
+
         log("[采集] ✗ 无法定位控件 (${msg.sender}: ${msg.content.take(20)})")
         return null
     }
