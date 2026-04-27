@@ -260,7 +260,12 @@ class CollectorService : Service() {
             log("没有新消息，直接进入监控模式")
             val lastMsg = MessageCollector.getLastMessage(service)
             if (lastMsg != null && Storage.getBookmark() == null) {
-                Storage.saveBookmark(lastMsg.sender, lastMsg.content, lastMsg.time)
+                val visibleMsgs = MessageCollector.collectVisibleMessages(service)
+                val prevMsg = if (visibleMsgs.size >= 2) visibleMsgs[visibleMsgs.size - 2] else null
+                Storage.saveBookmark(
+                    lastMsg.sender, lastMsg.content, lastMsg.time,
+                    prevMsg?.sender ?: "", prevMsg?.content ?: ""
+                )
                 log("已记录初始书签")
             }
         }

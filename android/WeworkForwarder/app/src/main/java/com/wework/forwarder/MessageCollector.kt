@@ -99,6 +99,15 @@ object MessageCollector {
         val messages = collectVisibleMessages(service)
         for (i in messages.indices.reversed()) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content, messages[i].time)) {
+                // 有 prevContent 时验证前一条也匹配，避免重复内容匹配到假书签
+                if (bookmark.prevContent.isNotEmpty() && i > 0) {
+                    val prev = messages[i - 1]
+                    if (prev.sender == bookmark.prevSender && prev.content.take(30) == bookmark.prevContent) {
+                        return BookmarkResult(index = i, message = messages[i], totalOnScreen = messages.size)
+                    }
+                    // prev 不匹配 → 假阳性（重复内容），继续往上看
+                    continue
+                }
                 return BookmarkResult(index = i, message = messages[i], totalOnScreen = messages.size)
             }
         }
