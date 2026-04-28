@@ -48,12 +48,13 @@ object GestureHelper {
 
     /**
      * 向上滑动（翻看历史消息）
+     * 幅度 8%(0.54↔0.46) + duration 600ms,避免触发企微惯性滚动
      */
     fun swipeUp(service: WeWorkAccessibilityService, metrics: DisplayMetrics) {
         if (!CollectorService.isRunning) return
         val w = metrics.widthPixels.toFloat()
         val h = metrics.heightPixels.toFloat()
-        service.swipe(w / 2, h * 0.425f, w / 2, h * 0.575f)
+        service.swipe(w / 2, h * 0.46f, w / 2, h * 0.54f)
         delay(Config.SWIPE_DELAY)
     }
 
@@ -61,7 +62,7 @@ object GestureHelper {
         if (!CollectorService.isRunning) return
         val w = metrics.widthPixels.toFloat()
         val h = metrics.heightPixels.toFloat()
-        service.swipe(w / 2, h * 0.575f, w / 2, h * 0.425f)
+        service.swipe(w / 2, h * 0.54f, w / 2, h * 0.46f)
         delay(Config.SWIPE_DELAY)
     }
 }

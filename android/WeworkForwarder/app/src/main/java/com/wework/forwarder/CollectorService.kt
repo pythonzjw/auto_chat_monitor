@@ -253,9 +253,11 @@ class CollectorService : Service() {
             if (lastMsg != null) {
                 val visibleMsgs = MessageCollector.collectVisibleMessages(service)
                 val prevMsg = if (visibleMsgs.size >= 2) visibleMsgs[visibleMsgs.size - 2] else null
+                val prevPrevMsg = if (visibleMsgs.size >= 3) visibleMsgs[visibleMsgs.size - 3] else null
                 Storage.saveBookmark(
                     lastMsg.sender, lastMsg.content, lastMsg.time,
-                    prevMsg?.sender ?: "", prevMsg?.content ?: ""
+                    prevMsg?.sender ?: "", prevMsg?.content ?: "",
+                    prevPrevMsg?.sender ?: "", prevPrevMsg?.content ?: ""
                 )
                 log("已记录初始书签，等待新消息")
             }

@@ -67,14 +67,24 @@ object Storage {
 
     // ===== 书签管理 =====
 
-    fun saveBookmark(sender: String, content: String, time: String, prevSender: String = "", prevContent: String = "") {
+    fun saveBookmark(
+        sender: String,
+        content: String,
+        time: String,
+        prevSender: String = "",
+        prevContent: String = "",
+        prevPrevSender: String = "",
+        prevPrevContent: String = ""
+    ) {
         bookmark = Bookmark(
             sender = sender,
             content = content.take(30),
             time = time,
             savedAt = now(),
             prevSender = prevSender,
-            prevContent = prevContent.take(30)
+            prevContent = prevContent.take(30),
+            prevPrevSender = prevPrevSender,
+            prevPrevContent = prevPrevContent.take(30)
         )
         saveFile(Config.BOOKMARK_FILE, bookmark)
     }
@@ -267,7 +277,10 @@ object Storage {
         val time: String = "",
         val savedAt: String = "",
         val prevSender: String = "",
-        val prevContent: String = ""
+        val prevContent: String = "",
+        // 第三层(prevPrev)用于三重锁,老书签反序列化为空 → 自动降级为双重锁
+        val prevPrevSender: String = "",
+        val prevPrevContent: String = ""
     )
 
     data class Message(

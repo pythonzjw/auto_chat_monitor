@@ -40,14 +40,18 @@ object MessageForwarder {
         if (stopped()) return false
         GestureHelper.delay(500)
 
-        // 记录最后一条消息
-        val lastMsg = MessageCollector.getLastMessage(service)
+        // 在底部一次性取 last/prev/prevPrev 三条快照(供三重锁书签)
+        // scrollUpToBookmark 后屏幕已离开底部,prev/prevPrev 必须在底部时取才真正相邻
+        val visibleAtBottom = MessageCollector.collectVisibleMessages(service)
+        val lastMsg = visibleAtBottom.lastOrNull()
+        val prevMsg = if (visibleAtBottom.size >= 2) visibleAtBottom[visibleAtBottom.size - 2] else null
+        val prevPrevMsg = if (visibleAtBottom.size >= 3) visibleAtBottom[visibleAtBottom.size - 3] else null
         log("[转发] 最后一条: ${lastMsg?.let { "${it.sender}: ${it.content.take(30)}" } ?: "无"}")
 
         // 步骤2：定位第一条新消息
         log("[转发] 步骤2: 定位第一条新消息...")
         val bookmark = Storage.getBookmark()
-        var firstNewMsg: Storage.Message? = null
+        val firstNewMsg: Storage.Message?
 
         if (bookmark != null) {
             log("[转发] 有书签，查找书签位置...")
@@ -55,15 +59,17 @@ object MessageForwarder {
             if (stopped()) return false
             if (bookmarkInfo != null) {
                 log("[转发] 找到书签(位置${bookmarkInfo.index}/${bookmarkInfo.totalOnScreen})，取第一条新消息...")
-                firstNewMsg = MessageCollector.getFirstNewMessage(service)
-                if (firstNewMsg == null) {
+                var fnm = MessageCollector.getFirstNewMessage(service)
+                if (fnm == null) {
                     GestureHelper.swipeDown(service, metrics)
-                    firstNewMsg = MessageCollector.getFirstNewMessage(service)
+                    fnm = MessageCollector.getFirstNewMessage(service)
                 }
+                firstNewMsg = fnm
             } else {
-                log("[转发] 书签未找到，从当前可见最早消息开始")
-                val visibleMsgs = MessageCollector.collectVisibleMessages(service)
-                firstNewMsg = visibleMsgs.firstOrNull()
+                // 关键:旧书签未找到 → 不更新书签 + 跳过本轮转发
+                // 等下次轮询(消息可能更多/可重新滑回)再尝试,避免污染书签锚点
+                log("[转发] ✗ 旧书签未找到,本轮跳过转发,保留旧书签等下次再找")
+                return false
             }
         } else {
             log("[转发] 首次运行，回溯 ${Config.lookbackMinutes} 分钟...")
@@ -80,15 +86,14 @@ object MessageForwarder {
         }
         log("[转发] 第一条新消息: ${firstNewMsg.sender}: ${firstNewMsg.content.take(30)}")
 
-        // 步骤3：转发前保存书签（同时保存前一条消息用于重复内容去重）
+        // 步骤3：转发前保存书签(三重锁,prev/prevPrev 取自底部快照)
         if (lastMsg != null) {
-            val visibleMsgs = MessageCollector.collectVisibleMessages(service)
-            val prevMsg = if (visibleMsgs.size >= 2) visibleMsgs[visibleMsgs.size - 2] else null
             Storage.saveBookmark(
                 lastMsg.sender, lastMsg.content, lastMsg.time,
-                prevMsg?.sender ?: "", prevMsg?.content ?: ""
+                prevMsg?.sender ?: "", prevMsg?.content ?: "",
+                prevPrevMsg?.sender ?: "", prevPrevMsg?.content ?: ""
             )
-            log("[转发] 步骤3: 书签已更新")
+            log("[转发] 步骤3: 书签已更新(含 prev/prevPrev)")
         }
 
         // 分批转发
@@ -194,7 +199,8 @@ object MessageForwarder {
     // ===== 内部方法 =====
 
     private fun scrollToBottom(service: WeWorkAccessibilityService, metrics: DisplayMetrics) {
-        repeat(5) {
+        // 滑动慢化后单次幅度 8%,需要更多轮才能到底
+        repeat(8) {
             if (stopped()) return
             GestureHelper.swipeDown(service, metrics)
         }
@@ -254,7 +260,7 @@ object MessageForwarder {
         var lastChildCount = -1
         var stableCount = 0
 
-        for (i in 0 until 12) {
+        for (i in 0 until 20) {
             if (stopped()) return false
 
             // 每轮强制滑动一次（杜绝零滑动直接判到底）
@@ -301,7 +307,7 @@ object MessageForwarder {
             lastChildCount = curChildCount
         }
 
-        // 兜底：12 轮后最后一次尝试
+        // 兜底：20 轮后最后一次尝试
         val btn = findSelectToHereDown(service) ?: run {
             // 兜底再 swipeUp 一次找按钮
             GestureHelper.swipeUp(service, metrics)

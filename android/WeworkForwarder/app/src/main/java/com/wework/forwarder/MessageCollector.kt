@@ -73,15 +73,23 @@ object MessageCollector {
         // 在消息列表中从后往前找书签位置
         for (i in messages.indices.reversed()) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
-                // Leader-Follower 严格验证（防重复内容假阳性）：
-                // - prevContent 为空（首次保存）→ 跳过验证，单条匹配
-                // - prevContent 非空 + i==0 → prev 不在屏幕，无法验证 → 视为不命中，继续往上找
+                // Leader-Follower 严格验证(防重复内容假阳性):
+                // - prevContent 为空(老书签或首次保存) → 跳过验证,单条匹配
+                // - prevContent 非空 + i==0 → prev 不在屏幕,无法验证 → 视为不命中,继续往上找
                 // - prevContent 非空 + i>0 → prev 必须严格匹配
+                // - prevPrevContent 非空 → 第三层验证(三重锁,防三连复读假阳性)
                 if (bookmark.prevContent.isNotEmpty()) {
                     if (i == 0) continue
                     val prev = messages[i - 1]
                     if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) {
                         continue
+                    }
+                    if (bookmark.prevPrevContent.isNotEmpty()) {
+                        if (i == 1) continue
+                        val prevPrev = messages[i - 2]
+                        if (prevPrev.sender != bookmark.prevPrevSender || prevPrev.content.take(30) != bookmark.prevPrevContent) {
+                            continue
+                        }
                     }
                 }
                 if (i < messages.size - 1) {
@@ -110,13 +118,20 @@ object MessageCollector {
         val messages = collectVisibleMessages(service)
         for (i in messages.indices.reversed()) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
-                // 严格 Leader-Follower 验证：
-                // i==0 时 prev 不在屏幕，返回 null 让 scrollUpToBookmark 自动再向上滑一次
+                // 严格 Leader-Follower 验证(三重锁):
+                // i==0/i==1 时 prev/prevPrev 不在屏幕,跳过让 scrollUpToBookmark 再向上滑
                 if (bookmark.prevContent.isNotEmpty()) {
                     if (i == 0) continue
                     val prev = messages[i - 1]
                     if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) {
                         continue
+                    }
+                    if (bookmark.prevPrevContent.isNotEmpty()) {
+                        if (i == 1) continue
+                        val prevPrev = messages[i - 2]
+                        if (prevPrev.sender != bookmark.prevPrevSender || prevPrev.content.take(30) != bookmark.prevPrevContent) {
+                            continue
+                        }
                     }
                 }
                 return BookmarkResult(index = i, message = messages[i], totalOnScreen = messages.size)
@@ -166,13 +181,20 @@ object MessageCollector {
         if (bookmark == null) return messages.firstOrNull()
         for (i in messages.indices) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
-                // 严格 Leader-Follower 验证：
-                // i==0 时 prev 不在屏幕，跳过此候选
+                // 严格 Leader-Follower 验证(三重锁):
+                // i==0/i==1 时 prev/prevPrev 不在屏幕,跳过此候选
                 if (bookmark.prevContent.isNotEmpty()) {
                     if (i == 0) continue
                     val prev = messages[i - 1]
                     if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) {
                         continue
+                    }
+                    if (bookmark.prevPrevContent.isNotEmpty()) {
+                        if (i == 1) continue
+                        val prevPrev = messages[i - 2]
+                        if (prevPrev.sender != bookmark.prevPrevSender || prevPrev.content.take(30) != bookmark.prevPrevContent) {
+                            continue
+                        }
                     }
                 }
                 return if (i + 1 < messages.size) messages[i + 1] else null
@@ -373,6 +395,16 @@ object MessageCollector {
             return ParseResult.Msg(Storage.Message(sender = sender, time = currentTime, content = content, type = type))
         }
 
+        // === 卡片识别(小程序/文件/链接/公众号等) ===
+        // 企微卡片底部有固定标识 TextView(如"小程序"),用它做主信号
+        val cardLabel = findCardLabel(node)
+        if (cardLabel != null) {
+            val sender = if (isMe) "我" else (findSenderName(node, "") ?: "群成员")
+            val title = findCardTitle(node, sender, cardLabel) ?: ""
+            val content = if (title.isNotEmpty()) "[$cardLabel] $title" else "[$cardLabel]"
+            return ParseResult.Msg(Storage.Message(sender = sender, time = currentTime, content = content, type = "card"))
+        }
+
         // 有头像但没有文本内容 → 图片/文件消息
         val hasLargeImage = findLargeImage(node, 150)
         if (hasLargeImage) {
@@ -461,6 +493,41 @@ object MessageCollector {
             }
         }
         return null
+    }
+
+    /**
+     * 卡片标识集合 — 企微卡片底部固定有这类短文本 TextView
+     */
+    private val CARD_LABELS = setOf("小程序", "文件", "链接", "公众号", "音频", "视频", "位置", "名片", "网页")
+
+    /**
+     * 在节点子树中找卡片底部的"标识"文本(如"小程序")
+     * 返回标识字符串(如"小程序"),未匹配返回 null
+     */
+    private fun findCardLabel(node: AccessibilityNodeInfo): String? {
+        val texts = NodeFinder.getAllTexts(node)
+        for (t in texts) {
+            val s = t.text.trim()
+            if (s.length <= 6 && s in CARD_LABELS) return s
+        }
+        return null
+    }
+
+    /**
+     * 提取卡片标题(主标题 TextView 文本)
+     * 排除发送人名/卡片标识本身/时间标签/系统消息/过短/过长文本
+     */
+    private fun findCardTitle(node: AccessibilityNodeInfo, sender: String, label: String): String? {
+        val texts = NodeFinder.getAllTexts(node)
+        return texts.firstOrNull { t ->
+            val s = t.text.trim()
+            s.isNotEmpty()
+                    && s != sender
+                    && s != label
+                    && !isTimeLabel(s)
+                    && !isSystemMessage(s)
+                    && s.length in 1..40
+        }?.text?.trim()
     }
 
     /**
