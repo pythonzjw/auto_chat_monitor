@@ -258,7 +258,6 @@ object MessageForwarder {
         val screenHeight = metrics.heightPixels
         val yMin = (screenHeight * 0.15).toInt()
         val yMax = (screenHeight * 0.92).toInt()
-        val seenY = mutableSetOf<Int>()
         var selectedCount = 0
 
         for (round in 0 until 10) {
@@ -269,6 +268,7 @@ object MessageForwarder {
                 ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
             if (chatList == null) continue
 
+            val seenY = mutableSetOf<Int>()
             var hitBookmark = false
 
             for (i in chatList.childCount - 1 downTo 0) {
@@ -283,7 +283,7 @@ object MessageForwarder {
                 val cy = rect.centerY()
                 val yKey = cy / 30 * 30
                 if (yKey in seenY) continue
-                if (cy <= firstMsgY) continue  // 等于或高于 firstNewMsg → 不勾选
+                seenY.add(yKey)
 
                 // 检查是否遇到旧书签 → 停止
                 if (oldBookmark != null) {
