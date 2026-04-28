@@ -80,9 +80,14 @@ object MessageForwarder {
         }
         log("[转发] 第一条新消息: ${firstNewMsg.sender}: ${firstNewMsg.content.take(30)}")
 
-        // 步骤3：转发前保存书签
+        // 步骤3：转发前保存书签（同时保存前一条消息用于重复内容去重）
         if (lastMsg != null) {
-            Storage.saveBookmark(lastMsg.sender, lastMsg.content, lastMsg.time)
+            val visibleMsgs = MessageCollector.collectVisibleMessages(service)
+            val prevMsg = if (visibleMsgs.size >= 2) visibleMsgs[visibleMsgs.size - 2] else null
+            Storage.saveBookmark(
+                lastMsg.sender, lastMsg.content, lastMsg.time,
+                prevMsg?.sender ?: "", prevMsg?.content ?: ""
+            )
             log("[转发] 步骤3: 书签已更新")
         }
 
@@ -243,21 +248,25 @@ object MessageForwarder {
      * 区分方式：取 bounds.centerY 最大的（最靠底部的 = ↑ 向下选方向）
      */
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
+        val screenHeight = metrics.heightPixels
         for (i in 0 until 10) {
             if (stopped()) return false
 
-            // 先检查"选择到这里"是否已经可见（避免不必要的滑动把按钮滑走）
             val btn = findSelectToHereDown(service)
             if (btn != null) {
                 val rect = Rect()
                 btn.getBoundsInScreen(rect)
-                log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}")
-                service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-                GestureHelper.delay(1000)
-                return true
+                if (rect.centerY() > screenHeight * 0.8) {
+                    // 在屏幕底部 → 真正到底了 → 点击
+                    log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}，点击")
+                    service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+                    GestureHelper.delay(1000)
+                    return true
+                }
+                // 在中间 → 还有消息未加载 → 继续下滑
+                log("[转发] '选择到这里'在中间(y=${rect.centerY()})，继续下滑加载")
             }
 
-            // 没找到 → 向下滑动，让更多消息出现
             GestureHelper.swipeDown(service, metrics)
         }
 
@@ -490,8 +499,8 @@ object MessageForwarder {
             return false
         }
 
-        // 按 left 升序，取第一个（对勾在搜索左边，不尝试后续按钮避免误点搜索）
-        val btn = clickables.minByOrNull { node ->
+        // 取 left 最大的（搜索在对勾左边，对勾在最右边）
+        val btn = clickables.maxByOrNull { node ->
             val rect = Rect()
             node.getBoundsInScreen(rect)
             rect.left
