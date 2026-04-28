@@ -247,22 +247,21 @@ class CollectorService : Service() {
             log("自动 dump 失败: ${e.message}")
         }
 
-        // 检查是否有新消息需要转发
-        if (MessageCollector.hasNewMessages(service)) {
-            log("发现新消息，执行首次转发...")
+        // 首次运行：先存书签不转发，等 Phase 2 监控到真新消息再转发
+        if (Storage.getBookmark() == null) {
+            val lastMsg = MessageCollector.getLastMessage(service)
+            if (lastMsg != null) {
+                Storage.saveBookmark(lastMsg.sender, lastMsg.content, lastMsg.time)
+                log("已记录初始书签，等待新消息")
+            }
+        } else if (MessageCollector.hasNewMessages(service)) {
+            log("发现新消息，开始转发...")
             floatingLog?.setStatus("running")
             val success = MessageForwarder.forwardNewMessages(service, metrics)
-            log(if (success) "首次转发完成" else "首次转发失败，继续进入监控模式")
+            log(if (success) "转发完成" else "转发失败")
             if (!success) floatingLog?.setStatus("error")
             Navigator.enterGroup(service, metrics, Config.sourceGroup)
             delay(Config.enterGroupWaitSeconds * 1000L)
-        } else {
-            log("没有新消息，直接进入监控模式")
-            val lastMsg = MessageCollector.getLastMessage(service)
-            if (lastMsg != null && Storage.getBookmark() == null) {
-                Storage.saveBookmark(lastMsg.sender, lastMsg.content, lastMsg.time)
-                log("已记录初始书签")
-            }
         }
 
         // Phase 2: 持续监控

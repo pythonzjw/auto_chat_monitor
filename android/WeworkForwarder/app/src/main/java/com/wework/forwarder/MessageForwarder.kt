@@ -198,7 +198,7 @@ object MessageForwarder {
     private fun scrollUpForMinutes(service: WeWorkAccessibilityService, metrics: DisplayMetrics, minutes: Int) {
         var lastFirstContent = ""
         var sameCount = 0
-        for (i in 0 until 50) {
+        for (i in 0 until 10) {
             if (stopped()) return
             val messages = MessageCollector.collectVisibleMessages(service)
 

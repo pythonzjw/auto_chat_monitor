@@ -53,7 +53,15 @@ object GestureHelper {
         if (!CollectorService.isRunning) return
         val w = metrics.widthPixels.toFloat()
         val h = metrics.heightPixels.toFloat()
-        service.swipe(w / 2, h * 0.3f, w / 2, h * 0.7f)
+        service.swipe(w / 2, h * 0.35f, w / 2, h * 0.6f)
+        delay(Config.SWIPE_DELAY)
+    }
+
+    fun swipeDown(service: WeWorkAccessibilityService, metrics: DisplayMetrics) {
+        if (!CollectorService.isRunning) return
+        val w = metrics.widthPixels.toFloat()
+        val h = metrics.heightPixels.toFloat()
+        service.swipe(w / 2, h * 0.6f, w / 2, h * 0.35f)
         delay(Config.SWIPE_DELAY)
     }
 
