@@ -254,44 +254,32 @@ object MessageForwarder {
             if (stopped()) return false
 
             val root = service.getRootNode()
-
-            // Layer1：按钮可见且在 ListView 底部 15% → 直接点
-            val btn = findSelectToHereDown(service)
-            if (btn != null) {
-                val rect = Rect()
-                btn.getBoundsInScreen(rect)
-                val chatList = root?.let {
-                    NodeFinder.findByClassName(it, "android.widget.ListView")
-                        ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
-                }
-                if (chatList != null) {
-                    val listBounds = Rect()
-                    chatList.getBoundsInScreen(listBounds)
-                    // ListView 区域：listBounds.top ~ listBounds.bottom
-                    val bottomThreshold = listBounds.bottom - (listBounds.height() * 0.15).toInt()
-                    if (rect.centerY() > bottomThreshold) {
-                        log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}，在ListView底部，点击")
-                        service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-                        GestureHelper.delay(1000)
-                        return true
-                    }
-                    log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}，但不在ListView底部，继续下滑")
-                }
-            }
-
-            // Layer2：下滑 + childCount 连续 2 次不变 = 已到底
             val currentCount = root?.let {
                 NodeFinder.findByClassName(it, "android.widget.ListView")
                     ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
             }?.childCount ?: 0
+
+            // childCount 连续 2 次不变 = 已到底
             if (currentCount == lastChildCount && currentCount > 0) {
                 stableCount++
                 if (stableCount >= 2) {
-                    val fallbackBtn = findSelectToHereDown(service)
-                    if (fallbackBtn != null) {
+                    val btn = findSelectToHereDown(service)
+                    if (btn != null) {
                         val r = Rect()
-                        fallbackBtn.getBoundsInScreen(r)
+                        btn.getBoundsInScreen(r)
                         log("[转发] 到底了，找到'选择到这里' y=${r.centerY()}，点击")
+                        service.clickAt(r.centerX().toFloat(), r.centerY().toFloat())
+                        GestureHelper.delay(1000)
+                        return true
+                    }
+                    // 按钮被滑消失 → 上滑 1 次恢复
+                    GestureHelper.swipeUp(service, metrics)
+                    GestureHelper.delay(500)
+                    val retryBtn = findSelectToHereDown(service)
+                    if (retryBtn != null) {
+                        val r = Rect()
+                        retryBtn.getBoundsInScreen(r)
+                        log("[转发] 上滑恢复'选择到这里' y=${r.centerY()}，点击")
                         service.clickAt(r.centerX().toFloat(), r.centerY().toFloat())
                         GestureHelper.delay(1000)
                         return true
@@ -303,6 +291,27 @@ object MessageForwarder {
                 stableCount = 0
             }
             lastChildCount = currentCount
+
+            // 前置守卫：按钮已在 ListView 底部 15% → 不滑（等 stableCount 确认）
+            val btn = findSelectToHereDown(service)
+            if (btn != null) {
+                val bRect = Rect()
+                btn.getBoundsInScreen(bRect)
+                val chatList = root?.let {
+                    NodeFinder.findByClassName(it, "android.widget.ListView")
+                        ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
+                }
+                if (chatList != null) {
+                    val listBounds = Rect()
+                    chatList.getBoundsInScreen(listBounds)
+                    val bottomThreshold = listBounds.bottom - (listBounds.height() * 0.15).toInt()
+                    if (bRect.centerY() > bottomThreshold) {
+                        log("[转发] 按钮在ListView底部(y=${bRect.centerY()})，等确认")
+                        GestureHelper.delay(500)
+                        continue
+                    }
+                }
+            }
 
             GestureHelper.swipeDown(service, metrics)
         }
