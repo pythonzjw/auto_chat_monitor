@@ -73,6 +73,13 @@ object MessageCollector {
         // 在消息列表中从后往前找书签位置
         for (i in messages.indices.reversed()) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
+                // Leader-Follower 验证：prevContent 不匹配则继续往上找（防重复内容假阳性）
+                if (bookmark.prevContent.isNotEmpty() && i > 0) {
+                    val prev = messages[i - 1]
+                    if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) {
+                        continue
+                    }
+                }
                 if (i < messages.size - 1) {
                     // 书签不是最后一条 → 书签后面有新消息
                     log("[采集] 书签在位置 ${i+1}/${messages.size}，后面有 ${messages.size - 1 - i} 条新消息")
@@ -153,6 +160,13 @@ object MessageCollector {
         if (bookmark == null) return messages.firstOrNull()
         for (i in messages.indices) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
+                // Leader-Follower 验证：prevContent 不匹配则继续找（防重复内容假阳性）
+                if (bookmark.prevContent.isNotEmpty() && i > 0) {
+                    val prev = messages[i - 1]
+                    if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) {
+                        continue
+                    }
+                }
                 return if (i + 1 < messages.size) messages[i + 1] else null
             }
         }
