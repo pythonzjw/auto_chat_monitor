@@ -193,6 +193,26 @@ object MessageCollector {
             }
         }
 
+        // 终极兜底：取列表底部可点击列表项（兼容小程序/图片等无文本消息类型）
+        val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+            ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+        if (chatList != null) {
+            val screenHeight = service.resources.displayMetrics.heightPixels
+            val yMin = (screenHeight * 0.15).toInt()
+            val yMax = (screenHeight * 0.90).toInt()
+            for (i in chatList.childCount - 1 downTo 0) {
+                val child = chatList.getChild(i) ?: continue
+                val rect = Rect()
+                child.getBoundsInScreen(rect)
+                if (rect.centerY() < yMin || rect.centerY() > yMax) continue
+                if (rect.height() < 30) continue
+                if (child.isClickable) {
+                    log("[采集] 兜底: 取底部可点击列表项定位到控件")
+                    return child
+                }
+            }
+        }
+
         log("[采集] ✗ 无法定位控件 (${msg.sender}: ${msg.content.take(20)})")
         return null
     }
@@ -438,7 +458,7 @@ object MessageCollector {
         }
 
         val yMin = (screenHeight * 0.15).toInt()
-        val yMax = (screenHeight * 0.88).toInt()
+        val yMax = (screenHeight * 0.95).toInt()
         val halfWidth = screenWidth / 2
 
         // 收集聊天区域内的文本节点，排除时间/系统消息/UI元素
