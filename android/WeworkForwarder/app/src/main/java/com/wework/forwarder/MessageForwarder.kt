@@ -259,6 +259,7 @@ object MessageForwarder {
         val yMin = (screenHeight * 0.15).toInt()
         val yMax = (screenHeight * 0.92).toInt()
         var selectedCount = 0
+        val nonTextMarkers = listOf("[图片]", "[文件]", "[小程序]", "[视频]", "[链接]", "[位置]", "[名片]")
 
         for (round in 0 until 10) {
             if (stopped()) break
@@ -285,17 +286,41 @@ object MessageForwarder {
                 if (yKey in seenY) continue
                 seenY.add(yKey)
 
+                // Bug1：跳过 firstNewMsg 自身（长按已选中，再点会取消）
+                if (Math.abs(cy - firstMsgY) < 30) continue
+
+                // Bug2：首次运行无书签时，不勾选 firstNewMsg 之上的消息
+                if (oldBookmark == null && cy < firstMsgY) continue
+
                 // 检查是否遇到旧书签 → 停止
                 if (oldBookmark != null) {
                     val allTexts = NodeFinder.getAllTexts(child)
                     val childText = allTexts.joinToString(" ") { it.text.trimEnd() }
-                    if (childText.isNotBlank() && childText.contains(oldBookmark.content.take(20))) {
+                    var isBookmark = false
+
+                    if (childText.isNotBlank()) {
+                        // 文本匹配
+                        if (childText.contains(oldBookmark.content.take(20))) {
+                            isBookmark = true
+                        }
+                    } else if (oldBookmark.content in nonTextMarkers) {
+                        // Bug3：纯图片类书签没有文本，用 child.isClickable 作为信号
+                        isBookmark = child.isClickable && rect.height() > 80
+                    }
+
+                    if (isBookmark) {
                         // Leader-Follower: 检查前一条也匹配
                         if (oldBookmark.prevContent.isNotEmpty() && i > 0) {
                             val prevChild = chatList.getChild(i - 1)
                             val prevTexts = NodeFinder.getAllTexts(prevChild ?: continue)
                             val prevText = prevTexts.joinToString(" ") { it.text.trimEnd() }
+                            var prevMatch = false
                             if (prevText.isNotBlank() && prevText.contains(oldBookmark.prevContent.take(20))) {
+                                prevMatch = true
+                            } else if (oldBookmark.prevContent in nonTextMarkers && prevText.isBlank()) {
+                                prevMatch = true
+                            }
+                            if (prevMatch) {
                                 hitBookmark = true
                                 log("[转发] 遇到旧书签，停止勾选。已选 $selectedCount 条")
                                 break
@@ -307,7 +332,6 @@ object MessageForwarder {
                     }
                 }
 
-                seenY.add(yKey)
                 service.clickAt(83f, cy.toFloat())
                 selectedCount++
                 GestureHelper.delay(200)
