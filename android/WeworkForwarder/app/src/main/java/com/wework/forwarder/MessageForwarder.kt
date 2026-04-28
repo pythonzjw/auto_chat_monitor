@@ -248,41 +248,29 @@ object MessageForwarder {
      * 区分方式：取 bounds.centerY 最大的（最靠底部的 = ↑ 向下选方向）
      */
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
-        var lastChildCount = -1
-        var stableCount = 0
+        val screenHeight = metrics.heightPixels
         for (i in 0 until 10) {
             if (stopped()) return false
 
-            val root = service.getRootNode()
-            val chatList = root?.let { NodeFinder.findByClassName(it, "android.widget.ListView")
-                ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView") }
-            val currentCount = chatList?.childCount ?: 0
-
-            // childCount 连续 2 次不变 → 已到底 → 找按钮点击
-            if (currentCount == lastChildCount && currentCount > 0) {
-                stableCount++
-                if (stableCount >= 2) {
-                    val btn = findSelectToHereDown(service)
-                    if (btn != null) {
-                        val rect = Rect()
-                        btn.getBoundsInScreen(rect)
-                        log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}，点击")
-                        service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-                        GestureHelper.delay(1000)
-                        return true
-                    }
-                    log("[转发] 已到底但找不到'选择到这里'，可能只有一条消息")
+            val btn = findSelectToHereDown(service)
+            if (btn != null) {
+                val rect = Rect()
+                btn.getBoundsInScreen(rect)
+                if (rect.centerY() > screenHeight * 0.85) {
+                    // 按钮在底部 → 已到底 → 直接点，不滑
+                    log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}，点击")
+                    service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+                    GestureHelper.delay(1000)
                     return true
                 }
-            } else {
-                stableCount = 0
+                // 按钮在中间 → 还有消息未加载 → 下滑
+                log("[转发] 按钮在中间(y=${rect.centerY()})，下滑加载")
             }
-            lastChildCount = currentCount
 
             GestureHelper.swipeDown(service, metrics)
         }
 
-        // 兜底：找按钮
+        // 兜底：滑不动了再找一次按钮
         val btn = findSelectToHereDown(service)
         if (btn != null) {
             val rect = Rect()

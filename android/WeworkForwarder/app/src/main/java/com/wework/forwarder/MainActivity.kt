@@ -33,6 +33,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etTargetGroups: EditText
     private lateinit var etLookback: EditText
     private lateinit var etPollInterval: EditText
+    private lateinit var etEnterWait: EditText
     private lateinit var btnStart: Button
     private lateinit var btnStop: Button
     private lateinit var btnDump: Button
@@ -66,6 +67,7 @@ class MainActivity : AppCompatActivity() {
         etTargetGroups = findViewById(R.id.et_target_groups)
         etLookback = findViewById(R.id.et_lookback)
         etPollInterval = findViewById(R.id.et_poll_interval)
+        etEnterWait = findViewById(R.id.et_enter_wait)
         btnStart = findViewById(R.id.btn_start)
         btnStop = findViewById(R.id.btn_stop)
         btnDump = findViewById(R.id.btn_dump)
@@ -80,6 +82,7 @@ class MainActivity : AppCompatActivity() {
         etTargetGroups.setText(Config.targetGroups.joinToString(","))
         etLookback.setText(Config.lookbackMinutes.toString())
         etPollInterval.setText(Config.pollIntervalSeconds.toString())
+        etEnterWait.setText(Config.enterGroupWaitSeconds.toString())
     }
 
     private fun setupButtons() {
@@ -166,6 +169,7 @@ class MainActivity : AppCompatActivity() {
             .filter { it.isNotEmpty() }
         Config.lookbackMinutes = etLookback.text.toString().toIntOrNull() ?: 10
         Config.pollIntervalSeconds = etPollInterval.text.toString().toIntOrNull() ?: 30
+        Config.enterGroupWaitSeconds = etEnterWait.text.toString().toIntOrNull() ?: 3
 
         // 校验
         if (Config.sourceGroup.isEmpty()) {
