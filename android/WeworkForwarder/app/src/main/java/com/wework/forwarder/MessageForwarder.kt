@@ -295,16 +295,6 @@ object MessageForwarder {
         log("[转发] 未找到'选择到这里'，可能只有一条新消息")
         return true
     }
-                // 在中间 → 还有消息未加载 → 继续下滑
-                log("[转发] '选择到这里'在中间(y=${rect.centerY()})，继续下滑加载")
-            }
-
-            GestureHelper.swipeDown(service, metrics)
-        }
-
-        log("[转发] 未找到'选择到这里'，可能只有一条新消息")
-        return true
-    }
 
     /**
      * 查找"选择到这里"按钮（↑向下选方向）
