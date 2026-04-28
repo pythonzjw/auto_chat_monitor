@@ -64,15 +64,4 @@ object GestureHelper {
         service.swipe(w / 2, h * 0.6f, w / 2, h * 0.35f)
         delay(Config.SWIPE_DELAY)
     }
-
-    /**
-     * 向下滑动（查看最新消息）
-     */
-    fun swipeDown(service: WeWorkAccessibilityService, metrics: DisplayMetrics) {
-        if (!CollectorService.isRunning) return
-        val w = metrics.widthPixels.toFloat()
-        val h = metrics.heightPixels.toFloat()
-        service.swipe(w / 2, h * 0.7f, w / 2, h * 0.3f)
-        delay(Config.SWIPE_DELAY)
-    }
 }
