@@ -145,15 +145,16 @@ object MessageForwarder {
             log("[转发] ✓ 已点击'多选'")
             GestureHelper.delay(800)
 
-            // 步骤6：全选
-            log("[转发] 步骤6: 滚动全选...")
-            if (!scrollAndSelectToHere(service, metrics)) {
-                log("[转发] ✗ 全选失败")
-                dumpOnFailure(service, "全选失败_批${batchIdx + 1}")
+            // 步骤6：勾选新消息（弃用「选择到这里」，改为逐个点checkbox）
+            log("[转发] 步骤6: 勾选新消息...")
+            val oldBookmark = bookmark  // 缓存旧书签，用于判断何时停止勾选
+            if (!scrollAndSelectToHere(service, metrics, rect.centerY(), oldBookmark)) {
+                log("[转发] ✗ 勾选失败")
+                dumpOnFailure(service, "勾选失败_批${batchIdx + 1}")
                 exitMultiSelect(service)
                 if (batchIdx == 0) return false else continue
             }
-            log("[转发] ✓ 全选完成")
+            log("[转发] ✓ 新消息已勾选")
 
             // 步骤7：点击转发
             log("[转发] 步骤7: 点击'转发'...")
@@ -245,43 +246,81 @@ object MessageForwarder {
     }
 
     /**
-     * 向下滑动到底部，找到正确方向的"选择到这里"按钮并点击
+     * 勾选所有新消息：从底部向上逐个点 checkbox，遇到旧书签停止
      *
-     * 企微多选模式有两个"选择到这里"按钮（带方向箭头）：
-     *   ↑ 选择到这里 — 向下选（我们需要这个：从第一条新消息选到最底部）
-     *   ↓ 选择到这里 — 向上选（不要点这个，会选中旧消息）
-     *
-     * 区分方式：取 bounds.centerY 最大的（最靠底部的 = ↑ 向下选方向）
+     * 弃用「选择到这里」按钮，改用坐标点击左侧 checkbox (x≈83, y=消息中心)。
+     * selectTargetGroups 已验证此方式可靠。
      */
-    private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
-        // 场景2：消息少，进入多选后"选择到这里"已在底部可见 → 直接点击
-        var btn = findSelectToHereDown(service)
-        if (btn != null) {
-            val rect = Rect()
-            btn.getBoundsInScreen(rect)
-            log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}，直接点击")
-            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-            GestureHelper.delay(1000)
-            return true
-        }
+    private fun scrollAndSelectToHere(
+        service: WeWorkAccessibilityService, metrics: DisplayMetrics,
+        firstMsgY: Int, oldBookmark: Storage.Bookmark?
+    ): Boolean {
+        val screenHeight = metrics.heightPixels
+        val yMin = (screenHeight * 0.15).toInt()
+        val yMax = (screenHeight * 0.92).toInt()
+        val seenY = mutableSetOf<Int>()
+        var selectedCount = 0
 
-        // 场景1：按钮不可见 → 下滑加载新消息直到按钮出现
-        for (i in 0 until 10) {
-            if (stopped()) return false
-            GestureHelper.swipeDown(service, metrics)
+        for (round in 0 until 10) {
+            if (stopped()) break
 
-            btn = findSelectToHereDown(service)
-            if (btn != null) {
+            val root = service.getRootNode() ?: continue
+            val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+                ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+            if (chatList == null) continue
+
+            var hitBookmark = false
+
+            for (i in chatList.childCount - 1 downTo 0) {
+                if (stopped()) break
+                val child = chatList.getChild(i) ?: continue
                 val rect = Rect()
-                btn.getBoundsInScreen(rect)
-                log("[转发] 找到'选择到这里'(向下选) y=${rect.centerY()}")
-                service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-                GestureHelper.delay(1000)
-                return true
+                child.getBoundsInScreen(rect)
+
+                if (rect.centerY() < yMin || rect.centerY() > yMax) continue
+                if (rect.height() < 40) continue
+
+                val cy = rect.centerY()
+                val yKey = cy / 30 * 30
+                if (yKey in seenY) continue
+                if (cy <= firstMsgY) continue  // 等于或高于 firstNewMsg → 不勾选
+
+                // 检查是否遇到旧书签 → 停止
+                if (oldBookmark != null) {
+                    val allTexts = NodeFinder.getAllTexts(child)
+                    val childText = allTexts.joinToString(" ") { it.text.trimEnd() }
+                    if (childText.isNotBlank() && childText.contains(oldBookmark.content.take(20))) {
+                        // Leader-Follower: 检查前一条也匹配
+                        if (oldBookmark.prevContent.isNotEmpty() && i > 0) {
+                            val prevChild = chatList.getChild(i - 1)
+                            val prevTexts = NodeFinder.getAllTexts(prevChild ?: continue)
+                            val prevText = prevTexts.joinToString(" ") { it.text.trimEnd() }
+                            if (prevText.isNotBlank() && prevText.contains(oldBookmark.prevContent.take(20))) {
+                                hitBookmark = true
+                                log("[转发] 遇到旧书签，停止勾选。已选 $selectedCount 条")
+                                break
+                            }
+                            continue  // prev 不匹配 → 假阳性
+                        }
+                        hitBookmark = true
+                        break
+                    }
+                }
+
+                seenY.add(yKey)
+                service.clickAt(83f, cy.toFloat())
+                selectedCount++
+                GestureHelper.delay(200)
             }
+
+            if (hitBookmark) break
+
+            // 往下滑加载更多
+            GestureHelper.swipeDown(service, metrics)
+            GestureHelper.delay(800)
         }
 
-        log("[转发] 未找到'选择到这里'，可能只有一条新消息")
+        log("[转发] 勾选完成，共额外勾选 $selectedCount 条")
         return true
     }
 

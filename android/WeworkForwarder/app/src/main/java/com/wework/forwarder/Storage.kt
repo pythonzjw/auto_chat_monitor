@@ -85,10 +85,13 @@ object Storage {
     fun matchesBookmark(sender: String?, content: String?, time: String?): Boolean {
         val bm = bookmark ?: return false
         val c = (content ?: "").take(30)
-        // 精确匹配：sender + content（time 只写日志不参与匹配，企微时间文本会变）
+        // 精确匹配：sender + content（时间用包含匹配处理"昨天 23:45"→"23:45"）
         if ((sender ?: "") == bm.sender && c == bm.content) {
-            if (bm.time.isNotEmpty() && (time ?: "") != bm.time) {
-                Log.d(TAG, "书签匹配: time不同但仍接受(${(time ?: "").take(20)} vs ${bm.time.take(20)})")
+            if (bm.time.isNotEmpty() && (time ?: "").isNotEmpty()) {
+                val t = time ?: ""
+                if (!t.contains(bm.time) && !bm.time.contains(t)) {
+                    Log.d(TAG, "书签匹配: time不包含(${t.take(20)} vs ${bm.time.take(20)})，仍接受")
+                }
             }
             return true
         }
