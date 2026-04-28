@@ -53,7 +53,7 @@ object GestureHelper {
         if (!CollectorService.isRunning) return
         val w = metrics.widthPixels.toFloat()
         val h = metrics.heightPixels.toFloat()
-        service.swipe(w / 2, h * 0.35f, w / 2, h * 0.6f)
+        service.swipe(w / 2, h * 0.425f, w / 2, h * 0.575f)
         delay(Config.SWIPE_DELAY)
     }
 
@@ -61,7 +61,7 @@ object GestureHelper {
         if (!CollectorService.isRunning) return
         val w = metrics.widthPixels.toFloat()
         val h = metrics.heightPixels.toFloat()
-        service.swipe(w / 2, h * 0.6f, w / 2, h * 0.35f)
+        service.swipe(w / 2, h * 0.575f, w / 2, h * 0.425f)
         delay(Config.SWIPE_DELAY)
     }
 }
