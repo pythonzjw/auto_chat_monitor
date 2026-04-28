@@ -245,83 +245,72 @@ object MessageForwarder {
      *   ↑ 选择到这里 — 向下选（我们需要这个：从第一条新消息选到最底部）
      *   ↓ 选择到这里 — 向上选（不要点这个，会选中旧消息）
      *
-     * 区分方式：取 bounds.centerY 最大的（最靠底部的 = ↑ 向下选方向）
+     * 到底信号：屏幕最后一条消息内容 + ListView childCount 连续 2 轮均不变。
+     * 不再用"按钮 y 位置"判断，因为按钮位置取决于多选锚点，与列表是否到底无关。
+     * 按钮被滑出屏幕时（滑过头），swipeUp 1 次恢复。
      */
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
+        var lastContent = ""
         var lastChildCount = -1
         var stableCount = 0
-        for (i in 0 until 10) {
+
+        for (i in 0 until 12) {
             if (stopped()) return false
 
+            // 每轮强制滑动一次（杜绝零滑动直接判到底）
+            GestureHelper.swipeDown(service, metrics)
+
+            // 读当前状态
             val root = service.getRootNode()
-            val currentCount = root?.let {
+            val chatList = root?.let {
                 NodeFinder.findByClassName(it, "android.widget.ListView")
                     ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
-            }?.childCount ?: 0
+            }
+            val curChildCount = chatList?.childCount ?: 0
+            val curContent = MessageCollector.collectVisibleMessages(service)
+                .lastOrNull()?.content ?: ""
 
-            // childCount 连续 2 次不变 = 已到底
-            if (currentCount == lastChildCount && currentCount > 0) {
+            // 按钮消失保护：滑过头会让按钮被滑出屏幕，需要 swipeUp 恢复
+            var btn = findSelectToHereDown(service)
+            if (btn == null) {
+                log("[转发] 按钮不可见，swipeUp 1次恢复")
+                GestureHelper.swipeUp(service, metrics)
+                btn = findSelectToHereDown(service)
+            }
+
+            // 到底判定：内容 + childCount 都不变才算稳定
+            val stable = curContent.isNotEmpty()
+                    && curContent == lastContent
+                    && curChildCount == lastChildCount
+            if (stable) {
                 stableCount++
-                if (stableCount >= 2) {
-                    val btn = findSelectToHereDown(service)
-                    if (btn != null) {
-                        val r = Rect()
-                        btn.getBoundsInScreen(r)
-                        log("[转发] 到底了，找到'选择到这里' y=${r.centerY()}，点击")
-                        service.clickAt(r.centerX().toFloat(), r.centerY().toFloat())
-                        GestureHelper.delay(1000)
-                        return true
-                    }
-                    // 按钮被滑消失 → 上滑 1 次恢复
-                    GestureHelper.swipeUp(service, metrics)
-                    GestureHelper.delay(500)
-                    val retryBtn = findSelectToHereDown(service)
-                    if (retryBtn != null) {
-                        val r = Rect()
-                        retryBtn.getBoundsInScreen(r)
-                        log("[转发] 上滑恢复'选择到这里' y=${r.centerY()}，点击")
-                        service.clickAt(r.centerX().toFloat(), r.centerY().toFloat())
-                        GestureHelper.delay(1000)
-                        return true
-                    }
-                    log("[转发] 到底但找不到'选择到这里'，可能只有一条消息")
+                log("[转发] 列表稳定第 ${stableCount} 轮 (last='${curContent.take(20)}', count=$curChildCount)")
+                // 连续 2 轮稳定（首次stable→stableCount=1，第二次→2 触发）
+                if (stableCount >= 2 && btn != null) {
+                    val r = Rect()
+                    btn.getBoundsInScreen(r)
+                    log("[转发] 到底了，点击'选择到这里' y=${r.centerY()}")
+                    service.clickAt(r.centerX().toFloat(), r.centerY().toFloat())
+                    GestureHelper.delay(1000)
                     return true
                 }
             } else {
                 stableCount = 0
             }
-            lastChildCount = currentCount
-
-            // 前置守卫：按钮已在 ListView 底部 15% → 不滑（等 stableCount 确认）
-            val btn = findSelectToHereDown(service)
-            if (btn != null) {
-                val bRect = Rect()
-                btn.getBoundsInScreen(bRect)
-                val chatList = root?.let {
-                    NodeFinder.findByClassName(it, "android.widget.ListView")
-                        ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
-                }
-                if (chatList != null) {
-                    val listBounds = Rect()
-                    chatList.getBoundsInScreen(listBounds)
-                    val bottomThreshold = listBounds.bottom - (listBounds.height() * 0.15).toInt()
-                    if (bRect.centerY() > bottomThreshold) {
-                        log("[转发] 按钮在ListView底部(y=${bRect.centerY()})，等确认")
-                        GestureHelper.delay(500)
-                        continue
-                    }
-                }
-            }
-
-            GestureHelper.swipeDown(service, metrics)
+            lastContent = curContent
+            lastChildCount = curChildCount
         }
 
-        // 兜底：10 轮后最后一次尝试
-        val btn = findSelectToHereDown(service)
+        // 兜底：12 轮后最后一次尝试
+        val btn = findSelectToHereDown(service) ?: run {
+            // 兜底再 swipeUp 一次找按钮
+            GestureHelper.swipeUp(service, metrics)
+            findSelectToHereDown(service)
+        }
         if (btn != null) {
             val rect = Rect()
             btn.getBoundsInScreen(rect)
-            log("[转发] 兜底找到'选择到这里' y=${rect.centerY()}，点击")
+            log("[转发] 兜底点击'选择到这里' y=${rect.centerY()}")
             service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
             GestureHelper.delay(1000)
             return true

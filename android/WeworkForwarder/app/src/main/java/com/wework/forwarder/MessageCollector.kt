@@ -73,8 +73,12 @@ object MessageCollector {
         // 在消息列表中从后往前找书签位置
         for (i in messages.indices.reversed()) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
-                // Leader-Follower 验证：prevContent 不匹配则继续往上找（防重复内容假阳性）
-                if (bookmark.prevContent.isNotEmpty() && i > 0) {
+                // Leader-Follower 严格验证（防重复内容假阳性）：
+                // - prevContent 为空（首次保存）→ 跳过验证，单条匹配
+                // - prevContent 非空 + i==0 → prev 不在屏幕，无法验证 → 视为不命中，继续往上找
+                // - prevContent 非空 + i>0 → prev 必须严格匹配
+                if (bookmark.prevContent.isNotEmpty()) {
+                    if (i == 0) continue
                     val prev = messages[i - 1]
                     if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) {
                         continue
@@ -106,8 +110,10 @@ object MessageCollector {
         val messages = collectVisibleMessages(service)
         for (i in messages.indices.reversed()) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
-                // prevContent 验证：前一条也匹配才通过，防重复内容假阳性
-                if (bookmark.prevContent.isNotEmpty() && i > 0) {
+                // 严格 Leader-Follower 验证：
+                // i==0 时 prev 不在屏幕，返回 null 让 scrollUpToBookmark 自动再向上滑一次
+                if (bookmark.prevContent.isNotEmpty()) {
+                    if (i == 0) continue
                     val prev = messages[i - 1]
                     if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) {
                         continue
@@ -160,8 +166,10 @@ object MessageCollector {
         if (bookmark == null) return messages.firstOrNull()
         for (i in messages.indices) {
             if (Storage.matchesBookmark(messages[i].sender, messages[i].content)) {
-                // Leader-Follower 验证：prevContent 不匹配则继续找（防重复内容假阳性）
-                if (bookmark.prevContent.isNotEmpty() && i > 0) {
+                // 严格 Leader-Follower 验证：
+                // i==0 时 prev 不在屏幕，跳过此候选
+                if (bookmark.prevContent.isNotEmpty()) {
+                    if (i == 0) continue
                     val prev = messages[i - 1]
                     if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) {
                         continue
