@@ -68,7 +68,7 @@ class CollectorService : Service() {
             Log.w(TAG, "没有悬浮窗权限，跳过创建悬浮窗")
         }
 
-        // 设置全局 uiLog 回调
+        // 设置全局 uiLog 回调（各模块统一走此入口，CollectorService.log() 不再重复调用）
         Config.uiLog = { msg ->
             val line = "[${Storage.now()}] $msg"
             Log.i(TAG, msg)
@@ -385,12 +385,21 @@ class CollectorService : Service() {
         }
     }
 
+    /**
+     * 服务内部日志：直接走 Config.uiLog（已在 onCreate 设置），避免双写。
+     * 仅在 Config.uiLog 尚未设置时（onCreate 之前）才 fallback 直接写。
+     */
     private fun log(msg: String) {
-        val line = "[${Storage.now()}] $msg"
-        Log.i(TAG, msg)
-        logCallback?.invoke(line)
-        floatingLog?.appendLog(msg)
-        Storage.appendLogLine(line)
+        val uiLog = Config.uiLog
+        if (uiLog != null) {
+            uiLog(msg)
+        } else {
+            val line = "[${Storage.now()}] $msg"
+            Log.i(TAG, msg)
+            logCallback?.invoke(line)
+            floatingLog?.appendLog(msg)
+            Storage.appendLogLine(line)
+        }
     }
 
     private fun createNotificationChannel() {

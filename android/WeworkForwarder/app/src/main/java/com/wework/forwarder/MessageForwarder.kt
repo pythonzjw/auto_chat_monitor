@@ -12,8 +12,8 @@ import android.view.accessibility.AccessibilityNodeInfo
  *   1. 滚到底部 → 记录最后一条消息
  *   2. 定位第一条新消息
  *   3. 转发前保存书签（宁可漏不可重）
- *   4. 长按 → 多选 → 滚到底全选 → 转发
- *   5. 在选群页面逐个搜索目标群并勾选（每批最多9个）
+ *   4. 长按 → 多选 → 逐条勾选新消息 → 转发
+ *   5. 在选群页面切换多选模式，动态定位 checkbox 坐标逐群勾选（每批最多9个）
  *   6. 发送
  *   7. 如果目标群 > 9 个，回到源群重复 4-6
  */
@@ -40,7 +40,7 @@ object MessageForwarder {
         if (stopped()) return false
         GestureHelper.delay(500)
 
-        // 记录最后一条消息
+        // 记录最后一条消息（用于步骤3的书签）
         val lastMsg = MessageCollector.getLastMessage(service)
         log("[转发] 最后一条: ${lastMsg?.let { "${it.sender}: ${it.content.take(30)}" } ?: "无"}")
 
@@ -85,7 +85,15 @@ object MessageForwarder {
         }
         log("[转发] 第一条新消息: ${firstNewMsg.sender}: ${firstNewMsg.content.take(30)}")
 
+        // ---- 指纹检查：跳过已转发的消息 ----
+        val fp = Storage.fingerprint(firstNewMsg.sender, firstNewMsg.time, firstNewMsg.content)
+        if (Storage.isForwarded(fp)) {
+            log("[转发] 指纹命中，该消息已转发，跳过: ${firstNewMsg.content.take(30)}")
+            return true
+        }
+
         // 步骤3：转发前保存书签（同时保存前一条消息+消息总数用于后续检测）
+        // 注意：书签在转发前保存（宁可漏不可重），崩溃重启只漏这批，不重发
         if (lastMsg != null) {
             val visibleMsgs = MessageCollector.collectVisibleMessages(service)
             val prevMsg = if (visibleMsgs.size >= 2) visibleMsgs[visibleMsgs.size - 2] else null
@@ -94,7 +102,7 @@ object MessageForwarder {
                 prevMsg?.sender ?: "", prevMsg?.content ?: "",
                 visibleMsgs.size
             )
-            log("[转发] 步骤3: 书签已更新")
+            log("[转发] 步骤3: 书签已更新 → ${lastMsg.content.take(20)}")
         }
 
         // 分批转发
@@ -145,9 +153,9 @@ object MessageForwarder {
             log("[转发] ✓ 已点击'多选'")
             GestureHelper.delay(800)
 
-            // 步骤6：勾选新消息（弃用「选择到这里」，改为逐个点checkbox）
+            // 步骤6：勾选新消息
             log("[转发] 步骤6: 勾选新消息...")
-            val oldBookmark = bookmark  // 缓存旧书签，用于判断何时停止勾选
+            val oldBookmark = bookmark
             if (!scrollAndSelectToHere(service, metrics, rect.centerY(), oldBookmark)) {
                 log("[转发] ✗ 勾选失败")
                 dumpOnFailure(service, "勾选失败_批${batchIdx + 1}")
@@ -193,6 +201,8 @@ object MessageForwarder {
             }
         }
 
+        // 转发成功后记录指纹，防止重复转发
+        Storage.markForwarded(fp)
         Storage.saveMessages(listOf(firstNewMsg))
         log("[转发] ✓ 全部完成！")
         return true
@@ -246,20 +256,30 @@ object MessageForwarder {
     }
 
     /**
-     * 勾选所有新消息：从底部向上逐个点 checkbox，遇到旧书签停止
+     * 勾选所有新消息：从底部向上逐个点 checkbox，遇到旧书签停止。
      *
-     * 弃用「选择到这里」按钮，改用坐标点击左侧 checkbox (x≈83, y=消息中心)。
-     * selectTargetGroups 已验证此方式可靠。
+     * 修复：
+     * 1. checkbox 坐标改为动态从控件树中查找，不再硬编码 x=83
+     * 2. 书签匹配加入 Leader-Follower 双重验证，防止重复内容假阳性
      */
     private fun scrollAndSelectToHere(
-        service: WeWorkAccessibilityService, metrics: DisplayMetrics,
-        firstMsgY: Int, oldBookmark: Storage.Bookmark?
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        firstMsgY: Int,
+        oldBookmark: Storage.Bookmark?
     ): Boolean {
         val screenHeight = metrics.heightPixels
         val yMin = (screenHeight * 0.15).toInt()
         val yMax = (screenHeight * 0.92).toInt()
         var selectedCount = 0
         val nonTextMarkers = listOf("[图片]", "[文件]", "[小程序]", "[视频]", "[链接]", "[位置]", "[名片]")
+
+        // 动态探测 checkbox 的 X 坐标（多选模式下每行左侧会出现 checkbox ImageView）
+        val checkboxX = detectCheckboxX(service, metrics) ?: run {
+            log("[转发] ✗ 无法探测 checkbox 坐标，使用默认值 83")
+            83f
+        }
+        log("[转发] checkbox X 坐标: $checkboxX")
 
         for (round in 0 until 10) {
             if (stopped()) break
@@ -286,53 +306,55 @@ object MessageForwarder {
                 if (yKey in seenY) continue
                 seenY.add(yKey)
 
-                // Bug1：跳过 firstNewMsg 自身（长按已选中，再点会取消）
+                // 跳过 firstNewMsg 自身（长按已选中，再点会取消）
                 if (Math.abs(cy - firstMsgY) < 30) continue
 
-                // Bug2：首次运行无书签时，不勾选 firstNewMsg 之上的消息
+                // 首次运行无书签时，不勾选 firstNewMsg 之上的消息
                 if (oldBookmark == null && cy < firstMsgY) continue
 
-                // 检查是否遇到旧书签 → 停止
+                // 检查是否遇到旧书签 → 停止（含 Leader-Follower 双重验证）
                 if (oldBookmark != null) {
                     val allTexts = NodeFinder.getAllTexts(child)
                     val childText = allTexts.joinToString(" ") { it.text.trimEnd() }
                     var isBookmark = false
 
                     if (childText.isNotBlank()) {
-                        // 文本匹配
                         if (childText.contains(oldBookmark.content.take(20))) {
                             isBookmark = true
                         }
                     } else if (oldBookmark.content in nonTextMarkers) {
-                        // Bug3：纯图片类书签没有文本，用 child.isClickable 作为信号
+                        // 纯图片类书签没有文本，用 isClickable+高度 作为信号
                         isBookmark = child.isClickable && rect.height() > 80
                     }
 
                     if (isBookmark) {
-                        // Leader-Follower: 检查前一条也匹配
+                        // ---- Leader-Follower 验证（防止重复内容假阳性）----
                         if (oldBookmark.prevContent.isNotEmpty() && i > 0) {
                             val prevChild = chatList.getChild(i - 1)
                             val prevTexts = NodeFinder.getAllTexts(prevChild ?: continue)
                             val prevText = prevTexts.joinToString(" ") { it.text.trimEnd() }
-                            var prevMatch = false
-                            if (prevText.isNotBlank() && prevText.contains(oldBookmark.prevContent.take(20))) {
-                                prevMatch = true
-                            } else if (oldBookmark.prevContent in nonTextMarkers && prevText.isBlank()) {
-                                prevMatch = true
+                            val prevMatch = when {
+                                prevText.isNotBlank() && prevText.contains(oldBookmark.prevContent.take(20)) -> true
+                                oldBookmark.prevContent in nonTextMarkers && prevText.isBlank() -> true
+                                else -> false
                             }
                             if (prevMatch) {
                                 hitBookmark = true
-                                log("[转发] 遇到旧书签，停止勾选。已选 $selectedCount 条")
+                                log("[转发] 遇到旧书签（Leader-Follower验证通过），停止勾选。已选 $selectedCount 条")
                                 break
                             }
-                            continue  // prev 不匹配 → 假阳性
+                            // prevContent 不匹配 → 假阳性（重复内容），继续往上找
+                            log("[转发] 内容匹配但 Leader-Follower 未通过，跳过（可能是重复内容）")
+                            continue
                         }
+                        // 没有 prevContent 时退化为单条匹配
                         hitBookmark = true
+                        log("[转发] 遇到旧书签（无 prevContent 单条匹配），停止勾选。已选 $selectedCount 条")
                         break
                     }
                 }
 
-                service.clickAt(83f, cy.toFloat())
+                service.clickAt(checkboxX, cy.toFloat())
                 selectedCount++
                 GestureHelper.delay(200)
             }
@@ -349,55 +371,38 @@ object MessageForwarder {
     }
 
     /**
-     * 查找"选择到这里"按钮（↑向下选方向）
+     * 动态探测多选模式下 checkbox 的 X 坐标。
      *
-     * 企微多选模式有两个方向按钮，区分方式：
-     *   - 多个候选 → 取 centerY 最大的（最靠底部 = ↑向下选）
-     *   - 只有 1 个 → 检查 y 值：上半屏(↓向上选)跳过，下半屏(↑向下选)使用
-     *
-     * v1.6.1：修复单个按钮在上半屏时误点（y=318 在标题栏附近 = 向上选方向）
+     * 多选模式进入后，列表最左侧会出现一列 ImageView（checkbox），
+     * 找到其 centerX 即为点击坐标，不再依赖硬编码的 83px。
      */
-    private fun findSelectToHereDown(service: WeWorkAccessibilityService): AccessibilityNodeInfo? {
+    private fun detectCheckboxX(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Float? {
+        val screenWidth = metrics.widthPixels
         val root = service.getRootNode() ?: return null
-        val screenHeight = service.resources.displayMetrics.heightPixels
+        val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+            ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+            ?: return null
 
-        // 收集所有包含"选择到这里"的节点
-        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        for (i in 0 until minOf(chatList.childCount, 5)) {
+            val child = chatList.getChild(i) ?: continue
+            val childRect = Rect()
+            child.getBoundsInScreen(childRect)
+            if (childRect.height() < 40) continue
 
-        // 通过 text 查找
-        val byText = NodeFinder.findAll(root) { node ->
-            val text = node.text?.toString() ?: ""
-            text.contains("选择到这里")
-        }
-        candidates.addAll(byText)
-
-        // 通过 contentDescription 查找
-        val byDesc = NodeFinder.findAll(root) { node ->
-            val desc = node.contentDescription?.toString() ?: ""
-            desc.contains("选择到这里")
-        }
-        candidates.addAll(byDesc)
-
-        if (candidates.isEmpty()) return null
-
-        if (candidates.size == 1) {
-            val rect = Rect()
-            candidates[0].getBoundsInScreen(rect)
-            if (rect.centerY() < screenHeight / 2) {
-                // 在上半屏 = ↓向上选方向，不要点（会选中旧消息）
-                log("[转发] 唯一'选择到这里'在上半屏(y=${rect.centerY()})，跳过继续滑")
-                return null
+            // 在每个列表项左侧区域寻找小 ImageView（checkbox 特征：宽高 20-80px，left < 200）
+            val images = NodeFinder.findAllByClassName(child, "android.widget.ImageView")
+            for (img in images) {
+                val r = Rect()
+                img.getBoundsInScreen(r)
+                if (r.left < (screenWidth * 0.2).toInt()
+                    && r.width() in 20..80
+                    && r.height() in 20..80
+                ) {
+                    return r.centerX().toFloat()
+                }
             }
-            return candidates[0]
         }
-
-        // 多个候选 → 取 centerY 最大的（最靠底部 = ↑向下选方向）
-        log("[转发] 找到 ${candidates.size} 个'选择到这里'，取最底部的")
-        return candidates.maxByOrNull { node ->
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
-            rect.centerY()
-        }
+        return null
     }
 
     private fun clickForward(service: WeWorkAccessibilityService): Boolean {
@@ -411,8 +416,7 @@ object MessageForwarder {
         NodeFinder.clickNode(service, forwardBtn)
         GestureHelper.delay(1000)
 
-        // "逐条转发/合并转发"弹窗是独立窗口（CustomerBottomListDialog），
-        // getRootNode() 取最大窗口会跳过它，必须用 getAllRootNodes 在所有窗口中查找
+        // "逐条转发/合并转发"弹窗是独立窗口，用 getAllRootNodes 查找
         val oneByOne = waitForNodeInAllWindows(service, 3000) { r ->
             NodeFinder.findByText(r, "逐条转发")
         }
@@ -429,11 +433,14 @@ object MessageForwarder {
     /**
      * 在"选择联系人"页面中勾选目标群（多选模式）
      *
+     * 修复：checkbox 坐标从控件树动态查找，不再硬编码 x=83。
+     *
      * 流程：
      *   1. 等待页面加载
      *   2. 点右上角对勾 → 切换多选模式
-     *   3. 逐个查找群名 → 坐标点击勾选
-     *   4. 点右下角蓝色"确定"按钮
+     *   3. 动态探测 checkbox X 坐标
+     *   4. 逐个查找群名 → 点击对应行的 checkbox 勾选
+     *   5. 点右下角蓝色"确定(N)"按钮
      */
     private fun selectTargetGroups(service: WeWorkAccessibilityService, groups: List<String>): Boolean {
         // 1. 等待选群页面加载
@@ -456,8 +463,17 @@ object MessageForwarder {
         log("[选群] ✓ 已切换到多选模式")
         GestureHelper.delay(800)
 
-        // 3. 逐个查找群名并勾选
+        // 3. 动态探测 checkbox X 坐标
+        val checkboxX = detectContactCheckboxX(service) ?: run {
+            log("[选群] ✗ 无法探测选群页面 checkbox 坐标，使用默认值 83")
+            83f
+        }
+        log("[选群] checkbox X 坐标: $checkboxX")
+
+        // 4. 逐个查找群名并勾选
         var selectedCount = 0
+        val metrics = service.resources.displayMetrics
+
         for ((idx, groupName) in groups.withIndex()) {
             if (stopped()) return selectedCount > 0
             log("[选群] (${idx + 1}/${groups.size}) 查找: $groupName")
@@ -472,21 +488,18 @@ object MessageForwarder {
                 }
 
                 if (result != null) {
-                    // 多选模式：点击左侧 ImageView 勾选框（x≈83），y 取群名行的中心
-                    // dump 实证：ImageView bounds=[45,392,121,482]，centerX=83
                     val rect = Rect()
                     result.getBoundsInScreen(rect)
-                    service.clickAt(83f, rect.centerY().toFloat())
+                    // 点击动态探测到的 checkbox X，y 取群名行中心
+                    service.clickAt(checkboxX, rect.centerY().toFloat())
                     selectedCount++
                     found = true
-                    log("[选群] ✓ 已勾选: $groupName (83, ${rect.centerY()})")
+                    log("[选群] ✓ 已勾选: $groupName ($checkboxX, ${rect.centerY()})")
                     GestureHelper.delay(500)
                     break
                 }
 
-                // 没找到 → 向下滑动继续找
                 if (scroll < 5) {
-                    val metrics = service.resources.displayMetrics
                     GestureHelper.swipeDown(service, metrics)
                     GestureHelper.delay(500)
                 }
@@ -506,7 +519,7 @@ object MessageForwarder {
 
         log("[选群] 共勾选 $selectedCount/${groups.size}")
 
-        // 点击底部"确定(N)"按钮，进入发送确认弹窗
+        // 5. 点击底部"确定(N)"按钮
         if (selectedCount > 0) {
             GestureHelper.delay(500)
             val confirmRoot = service.getRootNode()
@@ -528,19 +541,51 @@ object MessageForwarder {
     }
 
     /**
+     * 在选联系人页面中动态探测 checkbox 的 X 坐标。
+     *
+     * 多选模式下列表每行最左侧有一个 ImageView（checkbox），
+     * 通过扫描前几行确定其 centerX。
+     */
+    private fun detectContactCheckboxX(service: WeWorkAccessibilityService): Float? {
+        val root = service.getRootNode() ?: return null
+        val metrics = service.resources.displayMetrics
+        val screenWidth = metrics.widthPixels
+
+        // 找列表容器（选联系人页面通常是 ListView 或 RecyclerView）
+        val list = NodeFinder.findByClassName(root, "android.widget.ListView")
+            ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+            ?: return null
+
+        for (i in 0 until minOf(list.childCount, 5)) {
+            val child = list.getChild(i) ?: continue
+            val childRect = Rect()
+            child.getBoundsInScreen(childRect)
+            if (childRect.height() < 40) continue
+
+            val images = NodeFinder.findAllByClassName(child, "android.widget.ImageView")
+            for (img in images) {
+                val r = Rect()
+                img.getBoundsInScreen(r)
+                // checkbox 特征：左侧区域，尺寸适中
+                if (r.left < (screenWidth * 0.2).toInt()
+                    && r.width() in 20..80
+                    && r.height() in 20..80
+                ) {
+                    return r.centerX().toFloat()
+                }
+            }
+        }
+        return null
+    }
+
+    /**
      * 切换到多选模式
      *
      * 单选 vs 多选的确定性区别（dump 实证）：
      *   单选模式 tab: "最近聊天" + "创建聊天" + "转到微信"
      *   多选模式 tab: "最近聊天" + "从通讯录选择"
-     *
-     * 策略：
-     *   1. 先检查是否已在多选模式（"从通讯录选择"存在）
-     *   2. 如不在，点右上角对勾按钮 bounds=[810,112,945,247]
-     *   3. 验证："从通讯录选择"出现 或 "创建聊天"消失
      */
     private fun switchToMultiSelect(service: WeWorkAccessibilityService): Boolean {
-        // 防御：企微不在前台时不操作，避免在桌面上乱点
         if (!service.isInWeWork()) {
             log("[选群] 企微不在前台，无法切换多选")
             return false
@@ -573,7 +618,7 @@ object MessageForwarder {
             return false
         }
 
-        // 取 left 最大的（搜索在对勾左边，对勾在最右边）
+        // 取 left 最大的（对勾在最右边）
         val btn = clickables.maxByOrNull { node ->
             val rect = Rect()
             node.getBoundsInScreen(rect)
@@ -585,9 +630,8 @@ object MessageForwarder {
         log("[选群] 点击对勾按钮 (${rect.centerX()}, ${rect.centerY()})，共找到 ${clickables.size} 个候选")
         service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
 
-        // 等待多选模式生效（最多 3 秒），替代硬等 800ms 后检查一次
+        // 等待多选模式生效（最多 3 秒）
         val switched = NodeFinder.waitForNode(service, 3000) { r ->
-            // "从通讯录选择" 出现 = 多选模式
             NodeFinder.findByText(r, "从通讯录选择")
         }
         if (switched != null) {
@@ -595,11 +639,12 @@ object MessageForwarder {
             return true
         }
 
-        // 备选验证："创建聊天"消失 + "最近聊天"仍在 = 也算成功
+        // 备选验证：'创建聊天'消失 + '最近聊天'仍在
         val checkRoot = service.getRootNode()
         if (checkRoot != null
             && NodeFinder.findByText(checkRoot, "创建聊天") == null
-            && NodeFinder.findByText(checkRoot, "最近聊天") != null) {
+            && NodeFinder.findByText(checkRoot, "最近聊天") != null
+        ) {
             log("[选群] ✓ 多选模式已激活（'创建聊天'已消失）")
             return true
         }
@@ -609,12 +654,7 @@ object MessageForwarder {
     }
 
     /**
-     * 处理 ForwardDialogUtil 发送确认弹窗
-     *
-     * 此时"确定(N)"已由 selectTargetGroups() 点击完成，
-     * 这里只处理弹窗中的"发送(N)"按钮。
-     *
-     * dump 实证：text="发送(5)" bounds=[681,1478,900,1579] clickable
+     * 处理发送确认弹窗：点击"发送(N)"按钮
      */
     private fun confirmSend(service: WeWorkAccessibilityService): Boolean {
         GestureHelper.delay(800)
@@ -653,7 +693,6 @@ object MessageForwarder {
 
     /**
      * 在所有企微窗口中查找节点（包括弹出菜单/popup）
-     * 长按后弹出的菜单是独立 window，getRootNode() 可能拿不到
      */
     private fun waitForNodeInAllWindows(
         service: WeWorkAccessibilityService,
@@ -687,7 +726,7 @@ object MessageForwarder {
             for ((i, root) in roots.withIndex()) {
                 val rect = Rect()
                 root.getBoundsInScreen(rect)
-                sb.appendLine("--- 窗口 ${i+1} (${rect.width()}x${rect.height()}) ---")
+                sb.appendLine("--- 窗口 ${i + 1} (${rect.width()}x${rect.height()}) ---")
                 sb.append(NodeFinder.dumpTree(root))
             }
             val ts = System.currentTimeMillis()

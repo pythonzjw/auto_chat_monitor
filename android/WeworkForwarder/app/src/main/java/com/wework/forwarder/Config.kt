@@ -2,16 +2,19 @@ package com.wework.forwarder
 
 /**
  * 全局配置
+ *
+ * 可变字段（var）在主线程修改，采集循环（协程）中读取。
+ * 已对高频读写字段加 @Volatile 保证可见性。
  */
 object Config {
     // ===== 群配置 =====
-    var sourceGroup: String = ""
-    var targetGroups: List<String> = emptyList()
+    @Volatile var sourceGroup: String = ""
+    @Volatile var targetGroups: List<String> = emptyList()
 
     // ===== 时间配置 =====
-    var lookbackMinutes: Int = 10
-    var enterGroupWaitSeconds: Int = 3
-    var pollIntervalSeconds: Int = 30
+    @Volatile var lookbackMinutes: Int = 10
+    @Volatile var enterGroupWaitSeconds: Int = 3
+    @Volatile var pollIntervalSeconds: Int = 30
 
     // ===== 操作延时（毫秒） =====
     const val CLICK_DELAY = 800L
@@ -37,9 +40,12 @@ object Config {
     const val WEWORK_PACKAGE = "com.tencent.wework"
 
     // ===== 调试 =====
-    var debug: Boolean = true
+    @Volatile var debug: Boolean = true
 
     // ===== UI 日志回调 =====
-    /** 所有模块统一用这个回调输出日志到 UI/悬浮窗 */
-    var uiLog: ((String) -> Unit)? = null
+    /**
+     * 所有模块统一用这个回调输出日志到 UI/悬浮窗。
+     * @Volatile 保证赋值对采集协程线程立即可见。
+     */
+    @Volatile var uiLog: ((String) -> Unit)? = null
 }

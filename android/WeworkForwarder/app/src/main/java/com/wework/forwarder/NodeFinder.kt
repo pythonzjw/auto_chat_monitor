@@ -11,6 +11,9 @@ import android.view.accessibility.AccessibilityNodeInfo
  */
 object NodeFinder {
 
+    /** 控件树递归深度上限，防止异常控件树（自引用/极深嵌套）导致 StackOverflow */
+    private const val MAX_DEPTH = 50
+
     /**
      * 通过文本查找控件
      */
@@ -78,10 +81,19 @@ object NodeFinder {
      * 递归查找第一个满足条件的控件
      */
     fun findFirst(root: AccessibilityNodeInfo, predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
-        if (predicate(root)) return root
-        for (i in 0 until root.childCount) {
-            val child = root.getChild(i) ?: continue
-            val result = findFirst(child, predicate)
+        return findFirstRecursive(root, predicate, 0)
+    }
+
+    private fun findFirstRecursive(
+        node: AccessibilityNodeInfo,
+        predicate: (AccessibilityNodeInfo) -> Boolean,
+        depth: Int
+    ): AccessibilityNodeInfo? {
+        if (depth > MAX_DEPTH) return null
+        if (predicate(node)) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val result = findFirstRecursive(child, predicate, depth + 1)
             if (result != null) return result
         }
         return null
@@ -92,19 +104,21 @@ object NodeFinder {
      */
     fun findAll(root: AccessibilityNodeInfo, predicate: (AccessibilityNodeInfo) -> Boolean): List<AccessibilityNodeInfo> {
         val results = mutableListOf<AccessibilityNodeInfo>()
-        findAllRecursive(root, predicate, results)
+        findAllRecursive(root, predicate, results, 0)
         return results
     }
 
     private fun findAllRecursive(
         node: AccessibilityNodeInfo,
         predicate: (AccessibilityNodeInfo) -> Boolean,
-        results: MutableList<AccessibilityNodeInfo>
+        results: MutableList<AccessibilityNodeInfo>,
+        depth: Int
     ) {
+        if (depth > MAX_DEPTH) return
         if (predicate(node)) results.add(node)
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            findAllRecursive(child, predicate, results)
+            findAllRecursive(child, predicate, results, depth + 1)
         }
     }
 
@@ -113,11 +127,12 @@ object NodeFinder {
      */
     fun getAllTexts(node: AccessibilityNodeInfo): List<TextNode> {
         val results = mutableListOf<TextNode>()
-        collectTexts(node, results)
+        collectTexts(node, results, 0)
         return results
     }
 
-    private fun collectTexts(node: AccessibilityNodeInfo, results: MutableList<TextNode>) {
+    private fun collectTexts(node: AccessibilityNodeInfo, results: MutableList<TextNode>, depth: Int) {
+        if (depth > MAX_DEPTH) return
         val text = node.text?.toString()
         // 保留原始文本（不 trim），空格文本 " " 是企微头像占位符
         if (text != null && text.isNotEmpty()) {
@@ -127,7 +142,7 @@ object NodeFinder {
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            collectTexts(child, results)
+            collectTexts(child, results, depth + 1)
         }
     }
 
@@ -186,6 +201,7 @@ object NodeFinder {
      */
     fun dumpTree(node: AccessibilityNodeInfo?, depth: Int = 0): String {
         node ?: return ""
+        if (depth > MAX_DEPTH) return "  ".repeat(depth) + "...(深度截断)\n"
         val sb = StringBuilder()
         val indent = "  ".repeat(depth)
         val rect = Rect()

@@ -166,6 +166,10 @@ class WeWorkAccessibilityService : AccessibilityService() {
 
     /**
      * 同步执行手势，等待完成
+     *
+     * 超时语义：latch.await 超时返回时手势可能仍在系统手势队列里待执行，
+     * 直接返回 false 让调用方继续后续点击会与未完成的手势叠加（连点/误点）。
+     * 这里超时后多等一段时间作为"冷却期"，给可能正在执行的手势一个完成窗口。
      */
     private fun dispatchGestureSync(gesture: GestureDescription, timeoutMs: Long = 3000): Boolean {
         val latch = CountDownLatch(1)
@@ -181,7 +185,15 @@ class WeWorkAccessibilityService : AccessibilityService() {
             }
         }, null)
         if (!result) return false
-        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        val completed = latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        if (!completed) {
+            Log.w(TAG, "dispatchGesture 等待超时 ${timeoutMs}ms，手势可能仍在执行")
+            // 冷却 500ms 给系统时间走完，避免与下一个手势叠加
+            try { Thread.sleep(500) } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            return false
+        }
         return success
     }
 
