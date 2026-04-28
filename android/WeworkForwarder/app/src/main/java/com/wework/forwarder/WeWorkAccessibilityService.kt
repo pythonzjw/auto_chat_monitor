@@ -153,7 +153,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
     /**
      * 滑动手势
      */
-    fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, duration: Long = 600): Boolean {
+    fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, duration: Long = 700): Boolean {
         val path = Path().apply {
             moveTo(x1 + GestureHelper.randomOffset(30), y1 + GestureHelper.randomOffset(20))
             lineTo(x2 + GestureHelper.randomOffset(30), y2 + GestureHelper.randomOffset(20))

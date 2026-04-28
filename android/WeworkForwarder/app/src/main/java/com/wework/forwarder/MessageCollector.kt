@@ -149,12 +149,12 @@ object MessageCollector {
             val result = findBookmarkOnScreen(service)
             if (result != null) return result
 
-            // 到顶检测：连续 3 次第一条消息内容不变 → 已到顶，不再无意义滑动
+            // 到顶检测：连续 6 次第一条消息内容不变 → 已到顶，不再无意义滑动
             val messages = collectVisibleMessages(service)
             val firstContent = messages.firstOrNull()?.content ?: ""
             if (firstContent == lastFirstContent && firstContent.isNotEmpty()) {
                 sameCount++
-                if (sameCount >= 3) {
+                if (sameCount >= 6) {
                     log("[采集] 已到达消息列表顶部，停止查找书签")
                     return null
                 }
