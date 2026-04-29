@@ -48,26 +48,23 @@ object MessageForwarder {
         val prevPrevMsg = if (visibleAtBottom.size >= 3) visibleAtBottom[visibleAtBottom.size - 3] else null
         log("[转发] 最后一条: ${lastMsg?.let { "${it.sender}: ${it.content.take(30)}" } ?: "无"}")
 
-        // 步骤2：定位第一条新消息
+        // 步骤2：定位第一条新消息(同时拿到它的 ListView child 节点用于长按)
         log("[转发] 步骤2: 定位第一条新消息...")
         val bookmark = Storage.getBookmark()
-        val firstNewMsg: Storage.Message?
+        var anchor: MessageCollector.FirstNewMessageInfo?
 
         if (bookmark != null) {
             log("[转发] 有书签，查找书签位置...")
             val bookmarkInfo = MessageCollector.scrollUpToBookmark(service, metrics, 30)
             if (stopped()) return false
             if (bookmarkInfo != null) {
-                log("[转发] 找到书签(位置${bookmarkInfo.index}/${bookmarkInfo.totalOnScreen})，取第一条新消息...")
-                var fnm = MessageCollector.getFirstNewMessage(service)
-                if (fnm == null) {
+                log("[转发] 找到书签(位置${bookmarkInfo.index + 1}/${bookmarkInfo.totalOnScreen})，取第一条新消息节点...")
+                anchor = MessageCollector.findFirstNewMessageWithNode(service)
+                if (anchor == null) {
                     GestureHelper.swipeDown(service, metrics)
-                    fnm = MessageCollector.getFirstNewMessage(service)
+                    anchor = MessageCollector.findFirstNewMessageWithNode(service)
                 }
-                firstNewMsg = fnm
             } else {
-                // 关键:旧书签未找到 → 不更新书签 + 跳过本轮转发
-                // 等下次轮询(消息可能更多/可重新滑回)再尝试,避免污染书签锚点
                 log("[转发] ✗ 旧书签未找到,本轮跳过转发,保留旧书签等下次再找")
                 return false
             }
@@ -75,15 +72,15 @@ object MessageForwarder {
             log("[转发] 首次运行，回溯 ${Config.lookbackMinutes} 分钟...")
             scrollUpForMinutes(service, metrics, Config.lookbackMinutes)
             if (stopped()) return false
-            val visibleMsgs = MessageCollector.collectVisibleMessages(service)
-            firstNewMsg = visibleMsgs.firstOrNull()
+            anchor = MessageCollector.findFirstNewMessageWithNode(service)
         }
 
-        if (firstNewMsg == null) {
+        if (anchor == null) {
             log("[转发] ✗ 没有找到新消息，跳过")
             dumpOnFailure(service, "找不到新消息")
             return false
         }
+        val firstNewMsg = anchor.message
         log("[转发] 第一条新消息: ${firstNewMsg.sender}: ${firstNewMsg.content.take(30)}")
 
         // 步骤3：转发前保存书签(三重锁,prev/prevPrev 取自底部快照)
@@ -116,8 +113,15 @@ object MessageForwarder {
             }
 
             // 步骤4：长按第一条新消息
+            // 第1批: 用 step 2 拿到的 anchor.node(物理位置定位,精确)
+            // 第2+批: 书签已更新为 lastMsg, 重新调 findFirstNewMessageWithNode 已无意义
+            //         降级用旧 findMessageElement 按内容找(老逻辑兜底,小程序场景仍可能不准)
             log("[转发] 步骤4: 长按消息...")
-            val msgElem = MessageCollector.findMessageElement(service, firstNewMsg)
+            val msgElem: AccessibilityNodeInfo? = if (batchIdx == 0) {
+                anchor.node
+            } else {
+                MessageCollector.findMessageElement(service, firstNewMsg)
+            }
             if (msgElem == null) {
                 log("[转发] ✗ 找不到消息控件，无法长按")
                 dumpOnFailure(service, "找不到消息控件_批${batchIdx + 1}")
