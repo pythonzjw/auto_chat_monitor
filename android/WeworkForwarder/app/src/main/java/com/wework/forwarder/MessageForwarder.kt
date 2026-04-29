@@ -127,10 +127,12 @@ object MessageForwarder {
                 dumpOnFailure(service, "找不到消息控件_批${batchIdx + 1}")
                 if (batchIdx == 0) return false else continue
             }
-            val rect = Rect()
-            msgElem.getBoundsInScreen(rect)
-            log("[转发] 长按坐标: (${rect.centerX()}, ${rect.centerY()})")
-            service.longPressAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+            // v1.9.2: anchor.node 是 ListView 整行(全宽 0~1080),其几何中心 (540,*)
+            // 落在头像与气泡之间的空白处,企微长按无响应。从 ListView 行内挑出
+            // 真正的气泡节点(clickable + width>=200,排除头像 ImageView)再长按
+            val pressRect = findBubbleRect(msgElem)
+            log("[转发] 长按坐标: (${pressRect.centerX()}, ${pressRect.centerY()})")
+            service.longPressAt(pressRect.centerX().toFloat(), pressRect.centerY().toFloat())
             GestureHelper.delay(1200)
 
             // 步骤5：点击"多选"（在所有企微窗口中查找，包括弹出菜单）
@@ -704,5 +706,37 @@ object MessageForwarder {
         } catch (e: Exception) {
             log("[诊断] dump 异常: ${e.message}")
         }
+    }
+
+    /**
+     * 在 ListView 行内挑出适合长按的"气泡节点"矩形
+     *
+     * 背景:findFirstNewMessageWithNode 返回的 anchor.node 是 ListView 整行 RelativeLayout,
+     * 全宽 (0~screenWidth);其几何中心落在头像与气泡之间空白处,企微长按不响应。
+     *
+     * 策略:
+     *   1. 收集行内所有 clickable 后代,过滤掉头像类(width<200,头像 ~107x107)
+     *   2. 取面积最大的(气泡 LinearLayout / 卡片容器 LinearLayout 都满足)
+     *   3. 都没有 → 取行内任意非空 TextView 的 bounds(气泡内容)
+     *   4. 全失败 → 降级到行节点自己(原行为,兼容兜底)
+     */
+    private fun findBubbleRect(listItem: AccessibilityNodeInfo): Rect {
+        val candidates = NodeFinder.findAll(listItem) { it.isClickable && it != listItem }
+            .map { node ->
+                val r = Rect()
+                node.getBoundsInScreen(r)
+                r
+            }
+            .filter { it.width() >= 200 && it.height() >= 30 }
+        val largest = candidates.maxByOrNull { it.width() * it.height() }
+        if (largest != null) return largest
+        // 兜底1:任意非空 TextView 的 bounds
+        val textRect = NodeFinder.getAllTexts(listItem)
+            .firstOrNull { it.text.isNotBlank() }?.bounds
+        if (textRect != null) return textRect
+        // 兜底2:行节点自己(原 v1.8.11 行为)
+        val fallback = Rect()
+        listItem.getBoundsInScreen(fallback)
+        return fallback
     }
 }
