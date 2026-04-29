@@ -32,9 +32,13 @@ object Config {
     const val BOOKMARK_FILE = "bookmark.json"
     const val LOG_FILE = "collector.log"
     const val USER_CONFIG_FILE = "user_config.json"
+    const val LICENSE_FILE = "license.json"
 
     // ===== 企业微信包名 =====
     const val WEWORK_PACKAGE = "com.tencent.wework"
+
+    // ===== 云端授权 =====
+    const val LICENSE_BASE_URL = "http://47.116.98.81:5002"
 
     // ===== 调试 =====
     var debug: Boolean = true

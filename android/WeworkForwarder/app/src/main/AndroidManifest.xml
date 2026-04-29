@@ -20,12 +20,17 @@
     <!-- 前台服务类型声明（Android 14 targetSdk 34 必需） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!-- 云端机器码授权校验需要联网 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.WeworkForwarder"
+        android:usesCleartextTraffic="true"
         tools:targetApi="34">
 
         <!-- 主界面 -->

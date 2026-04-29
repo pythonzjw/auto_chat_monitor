@@ -1,20 +1,29 @@
 package com.wework.forwarder
 
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.accessibility.AccessibilityManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipEntry
@@ -26,6 +35,10 @@ import java.util.zip.ZipOutputStream
  * 配置群信息 → 检查权限 → 启动/停止采集服务
  */
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val TAG = "MainActivity"
+    }
 
     private lateinit var tvAccessibilityStatus: TextView
     private lateinit var btnAccessibility: Button
@@ -41,18 +54,77 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvLog: TextView
     private lateinit var scrollLog: ScrollView
 
+    private var licenseLoopJob: Job? = null
+    private var licenseDeniedShown = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // 初始化存储（必须最先调用）
+        // 初始化存储（必须最先调用，授权检查也要用到）
         Storage.init(this)
 
-        initViews()
-        loadConfig()
-        setupButtons()
-        setupLogCallback()
-        loadHistoryLogs()
+        // 云端机器码授权 → 通过才挂载主功能
+        lifecycleScope.launch {
+            when (val r = LicenseManager.verify(this@MainActivity)) {
+                is LicenseManager.Result.Ok -> {
+                    initViews()
+                    loadConfig()
+                    setupButtons()
+                    setupLogCallback()
+                    loadHistoryLogs()
+                    startLicenseKeepAlive()
+                }
+                is LicenseManager.Result.Denied -> {
+                    showLicenseDeniedDialog(r.machineCode, r.msg)
+                }
+            }
+        }
+    }
+
+    /**
+     * 启动 6 小时保活循环
+     * 任意一次校验失败 → 停采集 + 弹拒绝框 + 退出
+     */
+    private fun startLicenseKeepAlive() {
+        licenseLoopJob?.cancel()
+        licenseLoopJob = lifecycleScope.launch {
+            while (isActive) {
+                delay(LicenseManager.KEEPALIVE_INTERVAL_MS)
+                when (val r = LicenseManager.verify(this@MainActivity)) {
+                    is LicenseManager.Result.Ok -> Log.i(TAG, "[授权] 6h 保活通过")
+                    is LicenseManager.Result.Denied -> {
+                        Log.w(TAG, "[授权] 6h 保活失败: ${r.msg}")
+                        if (CollectorService.isRunning) {
+                            CollectorService.requestStop()
+                            stopService(Intent(this@MainActivity, CollectorService::class.java))
+                        }
+                        runOnUiThread { showLicenseDeniedDialog(r.machineCode, r.msg) }
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 授权失败 — 不可取消的 AlertDialog,显示机器码,提供"复制机器码"和"退出"
+     */
+    private fun showLicenseDeniedDialog(machineCode: String, msg: String) {
+        if (licenseDeniedShown) return
+        licenseDeniedShown = true
+        AlertDialog.Builder(this)
+            .setTitle("未授权")
+            .setMessage("$msg\n\n机器码:\n$machineCode\n\n请把机器码发给管理员激活")
+            .setCancelable(false)
+            .setPositiveButton("复制机器码") { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("machine_code", machineCode))
+                Toast.makeText(this, "机器码已复制", Toast.LENGTH_SHORT).show()
+                finish()
+            }
+            .setNegativeButton("退出") { _, _ -> finish() }
+            .show()
     }
 
     override fun onResume() {
@@ -127,6 +199,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateAccessibilityStatus() {
+        // 授权未通过时 views 未 initialized,直接返回避免 lateinit 异常
+        if (!::tvAccessibilityStatus.isInitialized) return
         if (isAccessibilityServiceEnabled()) {
             tvAccessibilityStatus.text = "无障碍服务：已开启"
             tvAccessibilityStatus.setTextColor(0xFF43A047.toInt())

@@ -297,4 +297,27 @@ object Storage {
         val lookbackMinutes: Int? = null,
         val pollIntervalSeconds: Int? = null
     )
+
+    // ===== 云端授权缓存 =====
+
+    data class LicenseCache(
+        val machineCode: String = "",
+        val lastVerifiedAt: Long = 0L
+    )
+
+    fun saveLicense(cache: LicenseCache) {
+        saveFile(Config.LICENSE_FILE, cache)
+    }
+
+    fun loadLicense(): LicenseCache? {
+        return loadFile<LicenseCache>(Config.LICENSE_FILE)
+    }
+
+    fun clearLicense() {
+        try {
+            if (!isInitialized()) return
+            File(dataDir, Config.LICENSE_FILE).delete()
+        } catch (_: Exception) {
+        }
+    }
 }
