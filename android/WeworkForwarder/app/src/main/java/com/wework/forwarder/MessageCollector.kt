@@ -172,27 +172,24 @@ object MessageCollector {
     /**
      * 在 messages 列表中找书签所在 index
      *
-     * 规则:
-     * 1. 严格三重锁优先:sender+content + prev(sender+content) + prevPrev(sender+content) 全对才命中
-     *    - prevContent 为空(老书签/首次保存) → 跳过 prev/prevPrev 验证,单条匹配即可
-     * 2. 严格匹配失败 + 屏幕上 sender+content 唯一匹配在 i==0 → 接受 i==0 fallback
-     *    (i==0 prev 不在屏幕本无法验证;但屏幕只有这一条候选,没有歧义)
-     * 3. 严格失败 + 多个候选 → 返回 null(保守不乱命中)
+     * v1.8.12: 撤销 v1.8.11 的 i==0 唯一候选 fallback。
+     *   反例:用户重发完全相同的小程序卡片时,屏幕首条恰好是新发的同名消息(非书签),
+     *   matchCount==1 仍然成立,fallback 会把新消息误判成书签 → 漏采。
+     *   控件树在小程序卡片场景下无任何可区分属性(实测 dump 验证),无法靠指纹区分。
+     *
+     * 唯一规则:严格三重锁(sender+content + prev + prevPrev)全对才命中。
+     *   - 命中失败 → 返回 null → 外层(MessageForwarder)走"本轮跳过,保留旧书签"路径
+     *   - 老书签(prevContent 为空) → 跳过 prev/prevPrev 验证,单条匹配即可(向后兼容)
      *
      * @return messages 中书签的 index,找不到返回 null
      */
     private fun findBookmarkIndex(messages: List<Storage.Message>, bookmark: Storage.Bookmark): Int? {
         if (messages.isEmpty()) return null
-        val matchCount = messages.count { Storage.matchesBookmark(it.sender, it.content) }
-        var fallbackI0: Int? = null
 
         for (i in messages.indices.reversed()) {
             if (!Storage.matchesBookmark(messages[i].sender, messages[i].content)) continue
             if (bookmark.prevContent.isNotEmpty()) {
-                if (i == 0) {
-                    if (fallbackI0 == null) fallbackI0 = 0
-                    continue
-                }
+                if (i == 0) continue
                 val prev = messages[i - 1]
                 if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) continue
                 if (bookmark.prevPrevContent.isNotEmpty()) {
@@ -202,11 +199,6 @@ object MessageCollector {
                 }
             }
             return i
-        }
-
-        if (fallbackI0 != null && matchCount == 1) {
-            log("[采集] 书签 i==0 唯一候选 → 降级单条命中")
-            return fallbackI0
         }
         return null
     }
