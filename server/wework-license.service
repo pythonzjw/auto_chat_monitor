@@ -1,0 +1,24 @@
+[Unit]
+Description=WeWork Forwarder License Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/wework-license
+ExecStart=/usr/bin/python3 /opt/wework-license/app.py
+Restart=on-failure
+RestartSec=5
+
+# 日志走 journald,查看用 journalctl -u wework-license -f
+StandardOutput=journal
+StandardError=journal
+
+# 环境变量(可选,有默认值)
+Environment=LICENSE_HOST=0.0.0.0
+Environment=LICENSE_PORT=5002
+Environment=LICENSE_DB=/opt/wework-license/license.db
+
+[Install]
+WantedBy=multi-user.target
