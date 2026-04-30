@@ -92,15 +92,19 @@ object MessageCollector {
 
         // v2.0.4: 累积消息(去重),不再依赖每屏的数量
         // 屏幕只显示 2-3 条,但 swipeUp 加载历史时,需要累积追踪已识别的所有消息
+        // v2.0.5: 用 sender+content+time 作去重 key (纯 content 会合并相同文本的多条消息)
+        // v2.0.5: 加入"连续 N 轮无新增即停止"的退出条件,防止滑到顶后死循环
         val allMessages = mutableListOf<Storage.Message>()
         val allNodes = mutableListOf<AccessibilityNodeInfo>()
-        val seenContent = mutableSetOf<String>()
+        val seenKeys = mutableSetOf<String>()
+
+        fun keyOf(m: Storage.Message) = "${m.sender}|${m.content}|${m.time}"
 
         // 初始屏幕消息加入
         for (i in screenMessages.indices) {
-            val content = screenMessages[i].content
-            if (content !in seenContent) {
-                seenContent.add(content)
+            val key = keyOf(screenMessages[i])
+            if (key !in seenKeys) {
+                seenKeys.add(key)
                 allMessages.add(screenMessages[i])
                 allNodes.add(screenNodes[i])
             }
@@ -109,7 +113,8 @@ object MessageCollector {
 
         // swipeUp 加载历史,累积收集消息
         var swipeUps = 0
-        while (allMessages.size < expectedMinCount && swipeUps < 30) {
+        var consecutiveNoNew = 0
+        while (allMessages.size < expectedMinCount && swipeUps < 30 && consecutiveNoNew < 3) {
             if (!CollectorService.isRunning) return null
             GestureHelper.swipeUp(service, metrics)
             GestureHelper.delay(300)
@@ -128,19 +133,29 @@ object MessageCollector {
             // 新屏幕的消息去重后追加到累积列表
             var newCount = 0
             for (i in screenMessages.indices) {
-                val content = screenMessages[i].content
-                if (content !in seenContent) {
-                    seenContent.add(content)
+                val key = keyOf(screenMessages[i])
+                if (key !in seenKeys) {
+                    seenKeys.add(key)
                     allMessages.add(screenMessages[i])
                     allNodes.add(screenNodes[i])
                     newCount++
                 }
             }
-            log("[采集] swipeUp 第 $swipeUps 轮，屏幕 ${screenMessages.size} 条，新增 $newCount 条，累计 ${allMessages.size} 条 (目标 >= $expectedMinCount)")
+
+            // 连续 3 轮无新增 = 已到顶
+            if (newCount == 0) {
+                consecutiveNoNew++
+            } else {
+                consecutiveNoNew = 0
+            }
+
+            log("[采集] swipeUp 第 $swipeUps 轮，屏幕 ${screenMessages.size} 条，新增 $newCount 条，累计 ${allMessages.size} 条 (目标 >= $expectedMinCount, 连续无新增 $consecutiveNoNew/3)")
         }
 
-        if (allMessages.size < expectedMinCount) {
-            log("[采集] swipeUp ${swipeUps} 轮后累计 ${allMessages.size} 条 < 目标 $expectedMinCount，已到顶")
+        if (consecutiveNoNew >= 3) {
+            log("[采集] 连续 3 轮无新增，已到顶。累计 ${allMessages.size} 条")
+        } else if (allMessages.size < expectedMinCount) {
+            log("[采集] swipeUp ${swipeUps} 轮后累计 ${allMessages.size} 条 < 目标 $expectedMinCount")
         }
 
         val actualK = Math.min(k, allMessages.size)
