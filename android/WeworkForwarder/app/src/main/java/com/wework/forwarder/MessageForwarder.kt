@@ -298,13 +298,17 @@ object MessageForwarder {
                 stableCount++
                 log("[转发] 列表稳定第 ${stableCount} 轮 (last='${curContent.take(20)}', count=$curChildCount)")
                 // 连续 2 轮稳定（首次stable→stableCount=1，第二次→2 触发）
-                if (stableCount >= 2 && btn != null) {
-                    val r = Rect()
-                    btn.getBoundsInScreen(r)
-                    log("[转发] 到底了，点击'选择到这里' y=${r.centerY()}")
-                    service.clickAt(r.centerX().toFloat(), r.centerY().toFloat())
-                    GestureHelper.delay(1000)
-                    return true
+                // v1.9.4: 已稳定 = 已到底,放宽单按钮上半屏限制(strict=false 兜底)
+                if (stableCount >= 2) {
+                    val finalBtn = btn ?: findSelectToHereDown(service, strict = false)
+                    if (finalBtn != null) {
+                        val r = Rect()
+                        finalBtn.getBoundsInScreen(r)
+                        log("[转发] 到底了，点击'选择到这里' y=${r.centerY()}")
+                        service.clickAt(r.centerX().toFloat(), r.centerY().toFloat())
+                        GestureHelper.delay(1000)
+                        return true
+                    }
                 }
             } else {
                 stableCount = 0
@@ -313,11 +317,11 @@ object MessageForwarder {
             lastChildCount = curChildCount
         }
 
-        // 兜底：20 轮后最后一次尝试
-        val btn = findSelectToHereDown(service) ?: run {
+        // 兜底：20 轮后最后一次尝试 (v1.9.4: 都用 strict=false,远超到底门槛)
+        val btn = findSelectToHereDown(service, strict = false) ?: run {
             // 兜底再 swipeUp 一次找按钮
             GestureHelper.swipeUp(service, metrics)
-            findSelectToHereDown(service)
+            findSelectToHereDown(service, strict = false)
         }
         if (btn != null) {
             val rect = Rect()
@@ -339,8 +343,13 @@ object MessageForwarder {
      *   - 只有 1 个 → 检查 y 值：上半屏(↓向上选)跳过，下半屏(↑向下选)使用
      *
      * v1.6.1：修复单个按钮在上半屏时误点（y=318 在标题栏附近 = 向上选方向）
+     * v1.9.4：strict=false 时跳过"上半屏"启发式——仅在调用方已通过其他信号
+     *         (如列表稳定 N 轮)确认"已到底"时使用,否则保留 v1.6.1 行为
      */
-    private fun findSelectToHereDown(service: WeWorkAccessibilityService): AccessibilityNodeInfo? {
+    private fun findSelectToHereDown(
+        service: WeWorkAccessibilityService,
+        strict: Boolean = true
+    ): AccessibilityNodeInfo? {
         val root = service.getRootNode() ?: return null
         val screenHeight = service.resources.displayMetrics.heightPixels
 
@@ -366,7 +375,7 @@ object MessageForwarder {
         if (candidates.size == 1) {
             val rect = Rect()
             candidates[0].getBoundsInScreen(rect)
-            if (rect.centerY() < screenHeight / 2) {
+            if (strict && rect.centerY() < screenHeight / 2) {
                 // 在上半屏 = ↓向上选方向，不要点（会选中旧消息）
                 log("[转发] 唯一'选择到这里'在上半屏(y=${rect.centerY()})，跳过继续滑")
                 return null
