@@ -2,6 +2,7 @@ package com.wework.forwarder
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Rect
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
@@ -192,11 +193,9 @@ object Navigator {
      *   0     — 群存在但无未读徽章
      *   K(>0) — 有 K 条未读;"99+" 折算为 99
      *
-     * 实现:
-     *   1. findGroupInList 风格的滚动查找(复用思路)
-     *   2. 沿 parent 上行 4 级,定位群所在的"行容器"(childCount >= 3 的 ViewGroup)
-     *   3. 行内 DFS 找匹配 ^\d+\+?$ 的 TextView 文本即为徽章数字
-     *   4. 时间字段(如 "9:03"/"昨天")自然不匹配,无需额外排除
+     * v2.0.1: 行容器识别从 "childCount>=3" 改为 "bounds.width>=screenW*0.9"。
+     * 因为徽章是行容器的直接子节点(头像右上角),与右侧文本区(208~1080)是兄弟,
+     * 旧 childCount 启发式会停在右侧文本区,几何上根本不包含徽章。
      */
     fun findUnreadCountForGroup(
         service: WeWorkAccessibilityService,
@@ -214,19 +213,25 @@ object Navigator {
         }
         if (group == null) return null
 
-        // 沿 parent 上行,找到包含群名 + 头像 + (徽章) + 时间 + 预览的行容器
-        // 上行最多 4 级;一旦遇到 childCount >= 3 即认为是行容器
+        // 上行找跨整行宽度的 parent (实测企微行容器 width≈1080,右侧文本区 width=872)
+        val rowBoundsThreshold = (metrics.widthPixels * 0.9).toInt()
+        val tmp = Rect()
         var row: AccessibilityNodeInfo? = group.parent
         var levels = 0
-        while (row != null && row.childCount < 3 && levels < 4) {
+        while (row != null && levels < 6) {
+            row.getBoundsInScreen(tmp)
+            if (tmp.width() >= rowBoundsThreshold) break
             row = row.parent
             levels++
         }
         val container = row ?: group
 
-        // 在行内 DFS 提取所有文本,匹配纯数字徽章
+        // 行内 DFS 找纯数字 TextView。
+        // bounds.width<100 过滤:实测徽章 49x50,正常预览/时间均 >100,
+        // 防止纯数字预览(如 "888")被误判为徽章。
         val texts = NodeFinder.getAllTexts(container)
         val badge = texts.firstNotNullOfOrNull { t ->
+            if (t.bounds.width() >= 100) return@firstNotNullOfOrNull null
             val s = t.text.trim()
             when {
                 s.matches(Regex("^\\d+$")) -> s.toIntOrNull()
@@ -234,6 +239,13 @@ object Navigator {
                 else -> null
             }
         }
+
+        if (badge == null) {
+            val cBounds = Rect().also { container.getBoundsInScreen(it) }
+            val sample = texts.take(8).joinToString(",") { "\"${it.text.take(15)}\"@${it.bounds.width()}" }
+            Log.d(TAG, "[徽章] 容器 bounds=$cBounds w=${cBounds.width()}, 行内文本=$sample")
+        }
+
         return badge ?: 0
     }
 
