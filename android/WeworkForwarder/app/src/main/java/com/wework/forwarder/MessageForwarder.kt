@@ -653,29 +653,39 @@ object MessageForwarder {
      * 背景:getNthFromBottomMessage 返回的 anchor.node 是 ListView 整行 RelativeLayout,
      * 全宽 (0~screenWidth);其几何中心落在头像与气泡之间空白处,企微长按不响应。
      *
-     * 策略:
-     *   1. 收集行内所有 clickable 后代,过滤掉头像类(width<200,头像 ~107x107)
-     *   2. 取面积最大的(气泡 LinearLayout / 卡片容器 LinearLayout 都满足)
-     *   3. 都没有 → 取行内任意非空 TextView 的 bounds(气泡内容)
-     *   4. 全失败 → 降级到行节点自己(原行为,兼容兜底)
+     * v2.0.2: 旧策略 width>=200 误杀短文本气泡(如 "不是" 宽 183),兜底落到时间栏 "23:19"。
+     *         改为按 className 排除头像 ImageView,保留所有 clickable 后代取最大。
+     *         文本兜底加时间格式过滤。
      */
     private fun findBubbleRect(listItem: AccessibilityNodeInfo): Rect {
-        val candidates = NodeFinder.findAll(listItem) { it.isClickable && it != listItem }
-            .map { node ->
-                val r = Rect()
-                node.getBoundsInScreen(r)
-                r
-            }
-            .filter { it.width() >= 200 && it.height() >= 30 }
+        val candidates = NodeFinder.findAll(listItem) {
+            it.isClickable
+                && it != listItem
+                && it.className?.toString() != "android.widget.ImageView"  // 头像
+        }.map { node ->
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            r
+        }.filter { it.height() >= 30 && it.width() >= 80 }  // 真实气泡至少 80 宽,排除小按钮
         val largest = candidates.maxByOrNull { it.width() * it.height() }
-        if (largest != null) return largest
-        // 兜底1:任意非空 TextView 的 bounds
+        if (largest != null) {
+            log("[长按] 选中气泡 bounds=$largest (clickable, ${candidates.size} 候选)")
+            return largest
+        }
+        // 兜底1:任意非空 TextView 的 bounds (排除时间标签 "23:19" / "9:03")
+        val timeRegex = Regex("^\\d{1,2}:\\d{2}(:\\d{2})?$")
         val textRect = NodeFinder.getAllTexts(listItem)
-            .firstOrNull { it.text.isNotBlank() }?.bounds
-        if (textRect != null) return textRect
-        // 兜底2:行节点自己(原 v1.8.11 行为)
+            .firstOrNull {
+                it.text.isNotBlank() && !timeRegex.matches(it.text.trim())
+            }?.bounds
+        if (textRect != null) {
+            log("[长按] 选中文本兜底 bounds=$textRect")
+            return textRect
+        }
+        // 兜底2:行节点自己
         val fallback = Rect()
         listItem.getBoundsInScreen(fallback)
+        log("[长按] 兜底用行节点 bounds=$fallback")
         return fallback
     }
 }
