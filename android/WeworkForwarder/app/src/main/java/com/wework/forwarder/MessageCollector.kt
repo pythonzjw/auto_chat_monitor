@@ -89,13 +89,15 @@ object MessageCollector {
             return null
         }
 
-        var scrollUps = 0
-        while (messages.size < k && scrollUps < 5) {
+        // v2.0.3: 屏幕 < K 时用 swipeUp 加载历史消息
+        // scrollToBottom 后屏幕已在底部，向上滑(swipeUp)才能加载历史(锚点保持在屏幕下方，不被滚出)
+        var swipeUps = 0
+        while (messages.size < k && swipeUps < 5) {
             if (!CollectorService.isRunning) return null
-            GestureHelper.swipeUp(service, metrics)  // 向上滑 = 加载更早历史
+            GestureHelper.swipeUp(service, metrics)
             GestureHelper.delay(500)
             if (!isChatPageVisible(service)) {
-                log("[采集] 滑动后离开聊天页面,停止")
+                log("[采集] swipeUp 后离开聊天页面,停止")
                 return null
             }
             val pair = collectByStructureWithNodes(
@@ -104,16 +106,18 @@ object MessageCollector {
             )
             messages = pair.first
             nodes = pair.second
-            scrollUps++
+            swipeUps++
         }
 
         if (messages.size < k) {
-            log("[采集] 屏幕仅 ${messages.size} 条 < 目标 $k,取屏幕首条作锚点")
-            return FirstNewMessageInfo(messages.first(), nodes.first())
+            log("[采集] swipeUp ${swipeUps} 轮后屏幕仍仅 ${messages.size} 条 < 目标 $k,已到顶,直接用屏幕数量")
+        } else {
+            log("[采集] swipeUp ${swipeUps} 轮,屏幕现有 ${messages.size} 条 >= 目标 $k")
         }
 
-        val targetIdx = messages.size - k
-        log("[采集] 倒数第 $k 条 = 屏幕第 ${targetIdx + 1}/${messages.size}: ${messages[targetIdx].sender}: ${messages[targetIdx].content.take(30)}")
+        val actualK = Math.min(k, messages.size)
+        val targetIdx = messages.size - actualK
+        log("[采集] 倒数第 $actualK 条 = 屏幕第 ${targetIdx + 1}/${messages.size}: ${messages[targetIdx].sender}: ${messages[targetIdx].content.take(30)}")
         return FirstNewMessageInfo(messages[targetIdx], nodes[targetIdx])
     }
 
