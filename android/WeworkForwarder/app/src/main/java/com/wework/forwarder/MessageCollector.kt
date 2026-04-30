@@ -81,37 +81,37 @@ object MessageCollector {
     ): FirstNewMessageInfo? {
         if (k < 1) return null
 
-        var (screenMessages, screenNodes) = collectByStructureWithNodes(
-            service.getRootNode() ?: return null,
-            service.resources.displayMetrics.widthPixels
-        )
+        // v2.1.0: 数据源切到 OCR (截屏 + MLKit 中文识别)
+        // 旧路径(parseListItem)依赖头像锚点,头像缺失/截断时漏消息;
+        // OCR 直接读屏幕像素,只关心文字。
+        var screenMessages = OcrCollector.collectFromScreen(service)
+        if (screenMessages == null) {
+            log("[采集] OCR 不可用 (Android < 11 或截屏失败),无法取倒数第 $k 条")
+            return null
+        }
         if (screenMessages.isEmpty()) {
-            log("[采集] 屏幕上无消息,无法取倒数第 $k 条")
+            log("[采集] OCR 屏幕无消息,无法取倒数第 $k 条")
             return null
         }
 
-        // v2.0.4: 累积消息(去重),不再依赖每屏的数量
-        // 屏幕只显示 2-3 条,但 swipeUp 加载历史时,需要累积追踪已识别的所有消息
-        // v2.0.5: 用 sender+content+time 作去重 key (纯 content 会合并相同文本的多条消息)
-        // v2.0.5: 加入"连续 N 轮无新增即停止"的退出条件,防止滑到顶后死循环
-        val allMessages = mutableListOf<Storage.Message>()
-        val allNodes = mutableListOf<AccessibilityNodeInfo>()
+        // 累积策略:
+        // - 第一批 addAll(顺序: 屏幕从上到下 = 旧到新)
+        // - 后续 swipeUp 加载更老消息 → 新增的整批 unshift 到列表头
+        // - 最终 allMessages 按时间从最早到最新排序
+        // - 倒数第 K 条 = allMessages[size - K]
+        // - 长按目标的 rect 始终来自最后一次 OCR(当前屏幕位置),可直接 dispatchGesture
+        //
+        // 去重 key: content + rect.top 按 100px 分桶(滚动后 top 变,容错)
+        val allMessages = mutableListOf<OcrCollector.OcrMessage>()
         val seenKeys = mutableSetOf<String>()
 
-        fun keyOf(m: Storage.Message) = "${m.sender}|${m.content}|${m.time}"
+        fun keyOf(m: OcrCollector.OcrMessage) = "${m.content}|${m.rect.top / 100}"
 
-        // 初始屏幕消息加入
-        for (i in screenMessages.indices) {
-            val key = keyOf(screenMessages[i])
-            if (key !in seenKeys) {
-                seenKeys.add(key)
-                allMessages.add(screenMessages[i])
-                allNodes.add(screenNodes[i])
-            }
+        for (m in screenMessages) {
+            if (seenKeys.add(keyOf(m))) allMessages.add(m)
         }
-        log("[采集] 初始屏幕 ${screenMessages.size} 条, 去重后 ${allMessages.size} 条")
+        log("[采集] 初始 OCR ${screenMessages.size} 条, 累计 ${allMessages.size} 条")
 
-        // swipeUp 加载历史,累积收集消息
         var swipeUps = 0
         var consecutiveNoNew = 0
         while (allMessages.size < expectedMinCount && swipeUps < 30 && consecutiveNoNew < 3) {
@@ -122,34 +122,22 @@ object MessageCollector {
                 log("[采集] swipeUp 后离开聊天页面,停止")
                 return null
             }
-            val pair = collectByStructureWithNodes(
-                service.getRootNode() ?: return null,
-                service.resources.displayMetrics.widthPixels
-            )
-            screenMessages = pair.first
-            screenNodes = pair.second
+            screenMessages = OcrCollector.collectFromScreen(service) ?: emptyList()
             swipeUps++
 
-            // 新屏幕的消息去重后追加到累积列表
-            var newCount = 0
-            for (i in screenMessages.indices) {
-                val key = keyOf(screenMessages[i])
-                if (key !in seenKeys) {
-                    seenKeys.add(key)
-                    allMessages.add(screenMessages[i])
-                    allNodes.add(screenNodes[i])
-                    newCount++
-                }
+            // 新屏幕去重后,把新增的整批 unshift 到 allMessages 头(它们是更老的消息)
+            val newOnes = mutableListOf<OcrCollector.OcrMessage>()
+            for (m in screenMessages) {
+                if (seenKeys.add(keyOf(m))) newOnes.add(m)
             }
-
-            // 连续 3 轮无新增 = 已到顶
-            if (newCount == 0) {
-                consecutiveNoNew++
-            } else {
+            if (newOnes.isNotEmpty()) {
+                allMessages.addAll(0, newOnes)
                 consecutiveNoNew = 0
+            } else {
+                consecutiveNoNew++
             }
 
-            log("[采集] swipeUp 第 $swipeUps 轮，屏幕 ${screenMessages.size} 条，新增 $newCount 条，累计 ${allMessages.size} 条 (目标 >= $expectedMinCount, 连续无新增 $consecutiveNoNew/3)")
+            log("[采集] swipeUp 第 $swipeUps 轮，OCR ${screenMessages.size} 条，新增 ${newOnes.size} 条，累计 ${allMessages.size} 条 (目标 >= $expectedMinCount, 连续无新增 $consecutiveNoNew/3)")
         }
 
         if (consecutiveNoNew >= 3) {
@@ -160,8 +148,9 @@ object MessageCollector {
 
         val actualK = Math.min(k, allMessages.size)
         val targetIdx = allMessages.size - actualK
-        log("[采集] 倒数第 $actualK 条 = 累计第 ${targetIdx + 1}/${allMessages.size}: ${allMessages[targetIdx].sender}: ${allMessages[targetIdx].content.take(30)}")
-        return FirstNewMessageInfo(allMessages[targetIdx], allNodes[targetIdx])
+        val target = allMessages[targetIdx]
+        log("[采集] 倒数第 $actualK 条 = 累计第 ${targetIdx + 1}/${allMessages.size}: ${target.sender}: ${target.content.take(30)}")
+        return FirstNewMessageInfo(target.toStorageMsg(), node = null, rect = target.rect)
     }
 
     /**
@@ -656,7 +645,11 @@ object MessageCollector {
 
     // ===== 数据类 =====
 
-    data class FirstNewMessageInfo(val message: Storage.Message, val node: AccessibilityNodeInfo)
+    data class FirstNewMessageInfo(
+        val message: Storage.Message,
+        val node: AccessibilityNodeInfo?,
+        val rect: Rect? = null,
+    )
 
     private sealed class ParseResult {
         data class TimeLabel(val time: String) : ParseResult()

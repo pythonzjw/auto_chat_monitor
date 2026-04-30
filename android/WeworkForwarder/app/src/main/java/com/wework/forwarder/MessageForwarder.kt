@@ -82,23 +82,27 @@ object MessageForwarder {
             }
 
             // 步骤4：长按锚点消息
-            // 第1批: 用 step 2 拿到的 anchor.node(物理位置定位,精确)
-            // 第2+批: 重新调 getNthFromBottomMessage 拿新节点(回源群后控件树已重建)
+            // 第1批: 用 step 2 拿到的 anchor(OCR rect 直接可用)
+            // 第2+批: 回源群 + 重新滚到底后,重新调 getNthFromBottomMessage
             log("[转发] 步骤4: 长按消息...")
-            val msgElem: AccessibilityNodeInfo? = if (batchIdx == 0) {
-                anchor.node
+            val pressInfo: MessageCollector.FirstNewMessageInfo? = if (batchIdx == 0) {
+                anchor
             } else {
-                MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)?.node
+                MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
             }
-            if (msgElem == null) {
-                log("[转发] ✗ 找不到消息控件，无法长按")
-                dumpOnFailure(service, "找不到消息控件_批${batchIdx + 1}")
+            if (pressInfo == null) {
+                log("[转发] ✗ 取锚点失败,无法长按")
+                dumpOnFailure(service, "找不到锚点_批${batchIdx + 1}")
                 if (batchIdx == 0) return false else continue
             }
-            // v1.9.2: anchor.node 是 ListView 整行(全宽 0~1080),其几何中心 (540,*)
-            // 落在头像与气泡之间的空白处,企微长按无响应。从 ListView 行内挑出
-            // 真正的气泡节点(clickable + width>=200,排除头像 ImageView)再长按
-            val pressRect = findBubbleRect(msgElem)
+            // v2.1.0: OCR rect 直接是消息气泡的 boundingBox,绕开 findBubbleRect
+            // 旧 NodeInfo 路径作降级:仅在 rect 为空(理论不会)时使用
+            val pressRect = pressInfo.rect ?: pressInfo.node?.let { findBubbleRect(it) }
+            if (pressRect == null) {
+                log("[转发] ✗ 锚点既无 rect 也无 node,无法定位长按坐标")
+                dumpOnFailure(service, "锚点无定位信息_批${batchIdx + 1}")
+                if (batchIdx == 0) return false else continue
+            }
             log("[转发] 长按坐标: (${pressRect.centerX()}, ${pressRect.centerY()})")
             service.longPressAt(pressRect.centerX().toFloat(), pressRect.centerY().toFloat())
             GestureHelper.delay(1200)
