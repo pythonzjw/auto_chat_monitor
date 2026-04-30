@@ -76,26 +76,43 @@ object MessageCollector {
     fun getNthFromBottomMessage(
         service: WeWorkAccessibilityService,
         metrics: DisplayMetrics,
-        k: Int
+        k: Int,
+        expectedMinCount: Int = k
     ): FirstNewMessageInfo? {
         if (k < 1) return null
 
-        var (messages, nodes) = collectByStructureWithNodes(
+        var (screenMessages, screenNodes) = collectByStructureWithNodes(
             service.getRootNode() ?: return null,
             service.resources.displayMetrics.widthPixels
         )
-        if (messages.isEmpty()) {
+        if (screenMessages.isEmpty()) {
             log("[采集] 屏幕上无消息,无法取倒数第 $k 条")
             return null
         }
 
-        // v2.0.3: 屏幕 < K 时用 swipeUp 加载历史消息
-        // scrollToBottom 后屏幕已在底部，向上滑(swipeUp)才能加载历史(锚点保持在屏幕下方，不被滚出)
+        // v2.0.4: 累积消息(去重),不再依赖每屏的数量
+        // 屏幕只显示 2-3 条,但 swipeUp 加载历史时,需要累积追踪已识别的所有消息
+        val allMessages = mutableListOf<Storage.Message>()
+        val allNodes = mutableListOf<AccessibilityNodeInfo>()
+        val seenContent = mutableSetOf<String>()
+
+        // 初始屏幕消息加入
+        for (i in screenMessages.indices) {
+            val content = screenMessages[i].content
+            if (content !in seenContent) {
+                seenContent.add(content)
+                allMessages.add(screenMessages[i])
+                allNodes.add(screenNodes[i])
+            }
+        }
+        log("[采集] 初始屏幕 ${screenMessages.size} 条, 去重后 ${allMessages.size} 条")
+
+        // swipeUp 加载历史,累积收集消息
         var swipeUps = 0
-        while (messages.size < k && swipeUps < 5) {
+        while (allMessages.size < expectedMinCount && swipeUps < 30) {
             if (!CollectorService.isRunning) return null
             GestureHelper.swipeUp(service, metrics)
-            GestureHelper.delay(500)
+            GestureHelper.delay(300)
             if (!isChatPageVisible(service)) {
                 log("[采集] swipeUp 后离开聊天页面,停止")
                 return null
@@ -104,21 +121,32 @@ object MessageCollector {
                 service.getRootNode() ?: return null,
                 service.resources.displayMetrics.widthPixels
             )
-            messages = pair.first
-            nodes = pair.second
+            screenMessages = pair.first
+            screenNodes = pair.second
             swipeUps++
+
+            // 新屏幕的消息去重后追加到累积列表
+            var newCount = 0
+            for (i in screenMessages.indices) {
+                val content = screenMessages[i].content
+                if (content !in seenContent) {
+                    seenContent.add(content)
+                    allMessages.add(screenMessages[i])
+                    allNodes.add(screenNodes[i])
+                    newCount++
+                }
+            }
+            log("[采集] swipeUp 第 $swipeUps 轮，屏幕 ${screenMessages.size} 条，新增 $newCount 条，累计 ${allMessages.size} 条 (目标 >= $expectedMinCount)")
         }
 
-        if (messages.size < k) {
-            log("[采集] swipeUp ${swipeUps} 轮后屏幕仍仅 ${messages.size} 条 < 目标 $k,已到顶,直接用屏幕数量")
-        } else {
-            log("[采集] swipeUp ${swipeUps} 轮,屏幕现有 ${messages.size} 条 >= 目标 $k")
+        if (allMessages.size < expectedMinCount) {
+            log("[采集] swipeUp ${swipeUps} 轮后累计 ${allMessages.size} 条 < 目标 $expectedMinCount，已到顶")
         }
 
-        val actualK = Math.min(k, messages.size)
-        val targetIdx = messages.size - actualK
-        log("[采集] 倒数第 $actualK 条 = 屏幕第 ${targetIdx + 1}/${messages.size}: ${messages[targetIdx].sender}: ${messages[targetIdx].content.take(30)}")
-        return FirstNewMessageInfo(messages[targetIdx], nodes[targetIdx])
+        val actualK = Math.min(k, allMessages.size)
+        val targetIdx = allMessages.size - actualK
+        log("[采集] 倒数第 $actualK 条 = 累计第 ${targetIdx + 1}/${allMessages.size}: ${allMessages[targetIdx].sender}: ${allMessages[targetIdx].content.take(30)}")
+        return FirstNewMessageInfo(allMessages[targetIdx], allNodes[targetIdx])
     }
 
     /**

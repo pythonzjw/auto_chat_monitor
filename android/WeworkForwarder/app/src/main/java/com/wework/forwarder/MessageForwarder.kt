@@ -52,7 +52,7 @@ object MessageForwarder {
             log("[转发] 徽章 $unreadCount 超过上限 ${Config.maxForwardCount},截断为 $k")
         }
         log("[转发] 步骤2: 取倒数第 $k 条作锚点...")
-        val anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k)
+        val anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
         if (anchor == null) {
             log("[转发] ✗ 取倒数第 $k 条失败")
             dumpOnFailure(service, "取锚点失败")
@@ -88,7 +88,7 @@ object MessageForwarder {
             val msgElem: AccessibilityNodeInfo? = if (batchIdx == 0) {
                 anchor.node
             } else {
-                MessageCollector.getNthFromBottomMessage(service, metrics, k)?.node
+                MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)?.node
             }
             if (msgElem == null) {
                 log("[转发] ✗ 找不到消息控件，无法长按")
