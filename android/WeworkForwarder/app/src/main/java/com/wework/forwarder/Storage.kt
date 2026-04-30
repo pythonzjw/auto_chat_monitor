@@ -67,6 +67,13 @@ object Storage {
 
     // ===== 书签管理 =====
 
+    // v1.9.3: 防御性黑名单——阻止 toolbar 文字被写进书签污染长期状态
+    private val BOOKMARK_BLACKLIST = setOf(
+        "企业名片", "发起收款", "快捷回复", "推荐客服",
+        "审批", "日报", "周报", "打卡", "公告",
+        "群机器人", "群待办", "聊天信息", "群公告"
+    )
+
     fun saveBookmark(
         sender: String,
         content: String,
@@ -76,6 +83,10 @@ object Storage {
         prevPrevSender: String = "",
         prevPrevContent: String = ""
     ) {
+        if (content.trim() in BOOKMARK_BLACKLIST) {
+            Log.w(TAG, "[书签] ✗ 拒绝写入疑似 toolbar 文字: $content")
+            return
+        }
         bookmark = Bookmark(
             sender = sender,
             content = content.take(30),

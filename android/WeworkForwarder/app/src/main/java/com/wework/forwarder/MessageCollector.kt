@@ -531,19 +531,27 @@ object MessageCollector {
 
     /**
      * 提取卡片标题(主标题 TextView 文本)
-     * 排除发送人名/卡片标识本身/时间标签/系统消息/过短/过长文本
+     *
+     * v1.9.3: 改用面积最大的合格 TextView,而不是 DFS 顺序第一条。
+     * 旧 firstOrNull 会被 sender 旁边的 at-mention 抢跑(实例:`＠微信` 长度 3 → 抓成 `[小程序] ＠微信`),
+     * 真正的卡片标题永远轮不到。卡片标题字号大、占面积也大,改 maxByOrNull(area) 即可命中。
+     * 同时排除 ^[@＠] at-mention 模式 + 长度下限 3,杜绝该误抓。
      */
     private fun findCardTitle(node: AccessibilityNodeInfo, sender: String, label: String): String? {
         val texts = NodeFinder.getAllTexts(node)
-        return texts.firstOrNull { t ->
-            val s = t.text.trim()
-            s.isNotEmpty()
-                    && s != sender
-                    && s != label
-                    && !isTimeLabel(s)
-                    && !isSystemMessage(s)
-                    && s.length in 1..40
-        }?.text?.trim()
+        return texts
+            .filter { t ->
+                val s = t.text.trim()
+                s.isNotEmpty()
+                        && s != sender
+                        && s != label
+                        && !isTimeLabel(s)
+                        && !isSystemMessage(s)
+                        && s.length in 3..40
+                        && !Regex("^[@＠]").containsMatchIn(s)
+            }
+            .maxByOrNull { it.bounds.width() * it.bounds.height() }
+            ?.text?.trim()
     }
 
     /**
@@ -570,7 +578,8 @@ object MessageCollector {
         }
 
         val yMin = (screenHeight * 0.15).toInt()
-        val yMax = (screenHeight * 0.95).toInt()
+        // v1.9.3: 0.95 → 0.88,屏蔽底部输入栏上方的工具栏(企业名片/发起收款/快捷回复/推荐客服)
+        val yMax = (screenHeight * 0.88).toInt()
         val halfWidth = screenWidth / 2
 
         // 收集聊天区域内的文本节点，排除时间/系统消息/UI元素
@@ -642,8 +651,17 @@ object MessageCollector {
     }
 
     private fun isUiElement(text: String): Boolean {
-        val uiTexts = setOf("消息", "通讯录", "工作台", "我", "发送", "更多", "返回",
-            "表情", "语音", "文件", "拍摄", "位置", "视频通话", "语音通话")
+        val uiTexts = setOf(
+            // 主导航
+            "消息", "通讯录", "工作台", "我",
+            // 输入栏 / 通话
+            "发送", "更多", "返回", "表情", "语音", "文件", "拍摄", "位置",
+            "视频通话", "语音通话",
+            // v1.9.3: 外部群/快团团/客服工具栏(生产中常见,误抓会污染书签)
+            "企业名片", "发起收款", "快捷回复", "推荐客服",
+            "审批", "日报", "周报", "打卡", "公告",
+            "群机器人", "群待办", "聊天信息", "群公告"
+        )
         if (text in uiTexts) return true
         if (Regex("^.+\\(\\d+\\)$").matches(text)) return true
         return false
