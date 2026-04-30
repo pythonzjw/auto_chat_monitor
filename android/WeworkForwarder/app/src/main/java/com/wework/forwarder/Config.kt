@@ -26,10 +26,11 @@ object Config {
     /** 每批转发最多选多少个群（企微限制9个） */
     const val BATCH_SIZE = 9
 
+    /** v2.0: 单次转发的最大消息数(防徽章异常时误转海量历史) */
+    var maxForwardCount: Int = 30
+
     // ===== 存储配置 =====
     const val MESSAGE_FILE = "messages.json"
-    const val FINGERPRINT_FILE = "fingerprints.json"
-    const val BOOKMARK_FILE = "bookmark.json"
     const val LOG_FILE = "collector.log"
     const val USER_CONFIG_FILE = "user_config.json"
     const val LICENSE_FILE = "license.json"

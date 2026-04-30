@@ -185,7 +185,12 @@ class CollectorService : Service() {
     }
 
     /**
-     * 主采集循环
+     * v2.0 主循环：群外监控未读徽章 → 命中后进群转最后 K 条 → 退出回列表
+     *
+     * 与 v1.x 的根本区别:
+     *   - 不再保存书签(三重锁/指纹/分隔线全部不需要)
+     *   - 待机时停在"消息列表"页(不在源群里),用户操作互不干扰
+     *   - "K 条新消息"由企微红色徽章告诉我们,不再启发式判断
      */
     private suspend fun runCollector() {
         val service = WeWorkAccessibilityService.instance
@@ -196,90 +201,37 @@ class CollectorService : Service() {
         }
 
         log("========================================")
-        log("企业微信消息采集转发 - 启动")
+        log("企业微信消息转发 v2.0 - 启动")
         log("源群: ${Config.sourceGroup}")
         log("目标群 (${Config.targetGroups.size}个): ${Config.targetGroups.joinToString(", ")}")
-        log("回溯: ${Config.lookbackMinutes} 分钟")
         log("轮询间隔: ${Config.pollIntervalSeconds} 秒")
+        log("单次最大转发: ${Config.maxForwardCount} 条")
         log("========================================")
 
-        // 确保企业微信在前台
         if (!Navigator.ensureWeWorkForeground(service)) {
             log("无法启动企业微信，退出")
             floatingLog?.setStatus("error")
             return
         }
 
-        // Phase 1: 进入源群并执行首次转发
-        log("===== Phase 1: 进入源群 =====")
-        if (!Navigator.enterGroup(service, metrics, Config.sourceGroup)) {
-            log("无法进入源群: ${Config.sourceGroup}，退出")
+        // Phase 1: 进入消息列表待机(不进任何群)
+        log("===== Phase 1: 进入消息列表待机 =====")
+        if (!Navigator.goToMessageList(service)) {
+            log("无法到达消息列表，退出")
             floatingLog?.setStatus("error")
             return
         }
-        log("已进入源群，等待 ${Config.enterGroupWaitSeconds} 秒...")
-        delay(Config.enterGroupWaitSeconds * 1000L)
+        delay(1000)
 
-        // 先滚到底部
-        for (i in 0 until 3) {
-            GestureHelper.swipeDown(service, metrics)
-        }
-        delay(500)
-
-        // 自动 dump（诊断用）
-        try {
-            val dumpRoot = service.getRootNode()
-            if (dumpRoot != null) {
-                val dump = NodeFinder.dumpTree(dumpRoot)
-                val header = buildString {
-                    appendLine("=== 自动 dump（采集启动时） ===")
-                    appendLine("根节点包名: ${dumpRoot.packageName}")
-                    appendLine("事件包名: ${service.currentPackage}")
-                    appendLine("Activity: ${service.currentActivity}")
-                    appendLine("时间: ${Storage.now()}")
-                    appendLine("屏幕: ${metrics.widthPixels}x${metrics.heightPixels}")
-                    appendLine("==============================")
-                }
-                Storage.saveDump("auto_dump_chat.txt", header + dump)
-                log("已自动保存企微控件树 dump (auto_dump_chat.txt)")
-            }
-        } catch (e: Exception) {
-            log("自动 dump 失败: ${e.message}")
-        }
-
-        // 首次运行：先存书签不转发，等 Phase 2 监控到真新消息再转发
-        if (Storage.getBookmark() == null) {
-            val lastMsg = MessageCollector.getLastMessage(service)
-            if (lastMsg != null) {
-                val visibleMsgs = MessageCollector.collectVisibleMessages(service)
-                val prevMsg = if (visibleMsgs.size >= 2) visibleMsgs[visibleMsgs.size - 2] else null
-                val prevPrevMsg = if (visibleMsgs.size >= 3) visibleMsgs[visibleMsgs.size - 3] else null
-                Storage.saveBookmark(
-                    lastMsg.sender, lastMsg.content, lastMsg.time,
-                    prevMsg?.sender ?: "", prevMsg?.content ?: "",
-                    prevPrevMsg?.sender ?: "", prevPrevMsg?.content ?: ""
-                )
-                log("已记录初始书签，等待新消息")
-            }
-        } else if (MessageCollector.hasNewMessages(service)) {
-            log("发现新消息，开始转发...")
-            floatingLog?.setStatus("running")
-            val success = MessageForwarder.forwardNewMessages(service, metrics)
-            log(if (success) "转发完成" else "转发失败")
-            if (!success) floatingLog?.setStatus("error")
-            Navigator.enterGroup(service, metrics, Config.sourceGroup)
-            delay(Config.enterGroupWaitSeconds * 1000L)
-        }
-
-        // Phase 2: 持续监控
-        log("===== Phase 2: 持续监控新消息 =====")
+        // Phase 2: 监控源群未读徽章
+        log("===== Phase 2: 监控源群未读徽章 =====")
         var consecutiveErrors = 0
         val maxConsecutiveErrors = 10
 
         while (isRunning && coroutineContext.isActive) {
             try {
                 floatingLog?.setStatus("waiting")
-                log("等待 ${Config.pollIntervalSeconds} 秒后检查...")
+                log("等待 ${Config.pollIntervalSeconds} 秒后扫描徽章...")
                 for (w in 0 until Config.pollIntervalSeconds) {
                     if (!isRunning || !coroutineContext.isActive) return
                     delay(1000)
@@ -288,30 +240,38 @@ class CollectorService : Service() {
 
                 floatingLog?.setStatus("running")
 
+                // 确保企微在前台 + 在消息列表(用户可能切走了)
                 if (!service.isInWeWork()) {
-                    log("企业微信不在前台，尝试恢复...")
+                    log("企微不在前台,尝试恢复...")
                     Navigator.ensureWeWorkForeground(service)
                     delay(2000)
-                    Navigator.enterGroup(service, metrics, Config.sourceGroup)
-                    delay(Config.enterGroupWaitSeconds * 1000L)
                 }
-
-                // 滚到底部刷新控件树，确保新消息可见
-                GestureHelper.swipeDown(service, metrics)
+                Navigator.goToMessageList(service)
                 delay(500)
 
-                if (MessageCollector.hasNewMessages(service)) {
-                    log("发现新消息，开始转发...")
-                    val success = MessageForwarder.forwardNewMessages(service, metrics)
-                    log(if (success) "转发完成" else "转发失败")
-                    if (!success) floatingLog?.setStatus("error")
-                    Navigator.enterGroup(service, metrics, Config.sourceGroup)
-                    delay(Config.enterGroupWaitSeconds * 1000L)
+                val unread = Navigator.findUnreadCountForGroup(service, metrics, Config.sourceGroup)
+                when {
+                    unread == null -> log("[扫描] 找不到源群 ${Config.sourceGroup}(列表上不存在?)")
+                    unread == 0 -> log("[扫描] 源群无未读")
+                    else -> {
+                        log("[扫描] 源群有 $unread 条未读,进入转发...")
+                        if (!Navigator.enterGroup(service, metrics, Config.sourceGroup)) {
+                            log("✗ 进入源群失败")
+                            consecutiveErrors++
+                            continue
+                        }
+                        delay(Config.enterGroupWaitSeconds * 1000L)
+
+                        val ok = MessageForwarder.forwardNewMessages(service, metrics, unread)
+                        log(if (ok) "✓ 转发完成" else "✗ 转发失败")
+                        if (!ok) floatingLog?.setStatus("error")
+
+                        // 退出回消息列表(供下一轮扫描)
+                        Navigator.exitGroup(service)
+                        delay(1000)
+                    }
                 }
-
                 consecutiveErrors = 0
-
-                if (Math.random() < 0.01) Storage.cleanOldFingerprints()
 
             } catch (e: CancellationException) {
                 throw e
@@ -327,8 +287,6 @@ class CollectorService : Service() {
                 try {
                     Navigator.goToMessageList(service)
                     delay(1000)
-                    Navigator.enterGroup(service, metrics, Config.sourceGroup)
-                    delay(Config.enterGroupWaitSeconds * 1000L)
                 } catch (e2: Exception) {
                     log("恢复失败: ${e2.message}")
                 }

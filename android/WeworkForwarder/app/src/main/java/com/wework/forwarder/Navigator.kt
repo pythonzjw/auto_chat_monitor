@@ -183,6 +183,61 @@ object Navigator {
     }
 
     /**
+     * v2.0: 在消息列表页扫描指定群的未读徽章数字
+     *
+     * 前提:已在消息列表页(由调用方 goToMessageList 保证)
+     *
+     * 返回:
+     *   null  — 找不到群(列表上不存在,或滑了 5 屏仍未出现)
+     *   0     — 群存在但无未读徽章
+     *   K(>0) — 有 K 条未读;"99+" 折算为 99
+     *
+     * 实现:
+     *   1. findGroupInList 风格的滚动查找(复用思路)
+     *   2. 沿 parent 上行 4 级,定位群所在的"行容器"(childCount >= 3 的 ViewGroup)
+     *   3. 行内 DFS 找匹配 ^\d+\+?$ 的 TextView 文本即为徽章数字
+     *   4. 时间字段(如 "9:03"/"昨天")自然不匹配,无需额外排除
+     */
+    fun findUnreadCountForGroup(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        groupName: String
+    ): Int? {
+        var root = service.getRootNode() ?: return null
+        var group = NodeFinder.findByText(root, groupName)
+        var attempts = 0
+        while (group == null && attempts < 5) {
+            GestureHelper.swipeDown(service, metrics)
+            root = service.getRootNode() ?: return null
+            group = NodeFinder.findByText(root, groupName)
+            attempts++
+        }
+        if (group == null) return null
+
+        // 沿 parent 上行,找到包含群名 + 头像 + (徽章) + 时间 + 预览的行容器
+        // 上行最多 4 级;一旦遇到 childCount >= 3 即认为是行容器
+        var row: AccessibilityNodeInfo? = group.parent
+        var levels = 0
+        while (row != null && row.childCount < 3 && levels < 4) {
+            row = row.parent
+            levels++
+        }
+        val container = row ?: group
+
+        // 在行内 DFS 提取所有文本,匹配纯数字徽章
+        val texts = NodeFinder.getAllTexts(container)
+        val badge = texts.firstNotNullOfOrNull { t ->
+            val s = t.text.trim()
+            when {
+                s.matches(Regex("^\\d+$")) -> s.toIntOrNull()
+                s.matches(Regex("^\\d+\\+$")) -> s.dropLast(1).toIntOrNull()
+                else -> null
+            }
+        }
+        return badge ?: 0
+    }
+
+    /**
      * 启动企业微信
      */
     private fun launchWeWork(context: Context) {

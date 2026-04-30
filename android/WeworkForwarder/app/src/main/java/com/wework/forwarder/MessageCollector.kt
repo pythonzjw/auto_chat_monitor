@@ -59,148 +59,62 @@ object MessageCollector {
         return messages
     }
 
-    fun hasNewMessages(service: WeWorkAccessibilityService): Boolean {
-        val bookmark = Storage.getBookmark() ?: run {
-            log("[采集] 没有书签，认为有新消息")
-            return true
-        }
-        val messages = collectVisibleMessages(service)
-        if (messages.isEmpty()) {
-            log("[采集] 无法读取屏幕消息")
-            return false
-        }
-
-        val idx = findBookmarkIndex(messages, bookmark)
-        if (idx == null) {
-            // 屏幕上找不到书签 → 认为有新消息（书签已被新消息推出屏幕）
-            log("[采集] 屏幕上找不到书签(${bookmark.content.take(20)})，最后一条: ${messages.last().content.take(20)}，认为有新消息")
-            return true
-        }
-        if (idx < messages.size - 1) {
-            log("[采集] 书签在位置 ${idx+1}/${messages.size}，后面有 ${messages.size - 1 - idx} 条新消息")
-            return true
-        } else {
-            log("[采集] 书签是最后一条(${messages[idx].content.take(20)})，暂无新消息")
-            return false
-        }
-    }
-
     fun getLastMessage(service: WeWorkAccessibilityService): Storage.Message? {
         return collectVisibleMessages(service).lastOrNull()
     }
 
-    fun findBookmarkOnScreen(service: WeWorkAccessibilityService): BookmarkResult? {
-        val bookmark = Storage.getBookmark() ?: return null
-        val messages = collectVisibleMessages(service)
-        val idx = findBookmarkIndex(messages, bookmark) ?: return null
-        return BookmarkResult(index = idx, message = messages[idx], totalOnScreen = messages.size)
-    }
+    /**
+     * v2.0: 取屏幕底部往上数第 K 条消息(及其 ListView 节点,供长按)
+     *
+     * 调用方已 scrollToBottom,屏幕末端就是最新消息。
+     * 如果屏幕可见数 < K,先 swipeUp 加载更多历史消息再重试(最多 5 次)。
+     *
+     * @param k 1 = 最后一条, 2 = 倒数第二条, ...
+     * @return null 表示控件树异常或屏幕无消息
+     *         屏幕仍 < K 时降级为屏幕第一条(已经到顶,这就是能拿到的最早消息)
+     */
+    fun getNthFromBottomMessage(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        k: Int
+    ): FirstNewMessageInfo? {
+        if (k < 1) return null
 
-    fun scrollUpToBookmark(service: WeWorkAccessibilityService, metrics: DisplayMetrics, maxScrolls: Int = 30): BookmarkResult? {
-        var lastFirstContent = ""
-        var sameCount = 0
+        var (messages, nodes) = collectByStructureWithNodes(
+            service.getRootNode() ?: return null,
+            service.resources.displayMetrics.widthPixels
+        )
+        if (messages.isEmpty()) {
+            log("[采集] 屏幕上无消息,无法取倒数第 $k 条")
+            return null
+        }
 
-        for (i in 0 until maxScrolls) {
+        var scrollUps = 0
+        while (messages.size < k && scrollUps < 5) {
             if (!CollectorService.isRunning) return null
-            val result = findBookmarkOnScreen(service)
-            if (result != null) return result
-
-            // 到顶检测：连续 6 次第一条消息内容不变 → 已到顶，不再无意义滑动
-            val messages = collectVisibleMessages(service)
-            val firstContent = messages.firstOrNull()?.content ?: ""
-            if (firstContent == lastFirstContent && firstContent.isNotEmpty()) {
-                sameCount++
-                if (sameCount >= 6) {
-                    log("[采集] 已到达消息列表顶部，停止查找书签")
-                    return null
-                }
-            } else {
-                sameCount = 0
-                lastFirstContent = firstContent
-            }
-
-            GestureHelper.swipeUp(service, metrics)
-            // 安全检查：滑动后确认还在聊天页面（ListView 存在）
+            GestureHelper.swipeUp(service, metrics)  // 向上滑 = 加载更早历史
+            GestureHelper.delay(500)
             if (!isChatPageVisible(service)) {
-                log("[采集] 滑动后已离开聊天页面，停止回溯")
+                log("[采集] 滑动后离开聊天页面,停止")
                 return null
             }
+            val pair = collectByStructureWithNodes(
+                service.getRootNode() ?: return null,
+                service.resources.displayMetrics.widthPixels
+            )
+            messages = pair.first
+            nodes = pair.second
+            scrollUps++
         }
-        log("[采集] 滚动 $maxScrolls 次未找到书签")
-        return null
-    }
 
-    fun getFirstNewMessage(service: WeWorkAccessibilityService): Storage.Message? {
-        val bookmark = Storage.getBookmark()
-        val messages = collectVisibleMessages(service)
-        if (messages.isEmpty()) return null
-        if (bookmark == null) return messages.firstOrNull()
-        val idx = findBookmarkIndex(messages, bookmark) ?: return messages.firstOrNull()
-        return if (idx + 1 < messages.size) messages[idx + 1] else null
-    }
-
-    /**
-     * 找到"第一条新消息" + 直接返回它的 ListView child 节点(用于长按)
-     *
-     * 关键优势:节点取自"找书签的同一次扫描",物理位置定位,不依赖 content 文本匹配
-     * 解决:小程序卡片(content="[小程序] xxx" 是合成串无法 findByText) +
-     *      混合屏幕(同时有同名小程序/文字时 findByText 会取错)
-     */
-    fun findFirstNewMessageWithNode(service: WeWorkAccessibilityService): FirstNewMessageInfo? {
-        val root = service.getRootNode() ?: return null
-        val screenWidth = service.resources.displayMetrics.widthPixels
-        val (messages, nodes) = collectByStructureWithNodes(root, screenWidth)
-        if (messages.isEmpty()) return null
-
-        val bookmark = Storage.getBookmark()
-        val targetIdx: Int = if (bookmark == null) {
-            0  // 首次,取屏幕第一条
-        } else {
-            val bookmarkIdx = findBookmarkIndex(messages, bookmark)
-            if (bookmarkIdx == null) {
-                // 屏幕找不到书签 → 取屏幕第一条作为兜底起点
-                0
-            } else if (bookmarkIdx + 1 < messages.size) {
-                bookmarkIdx + 1
-            } else {
-                return null  // 书签是最后一条,没有新消息
-            }
+        if (messages.size < k) {
+            log("[采集] 屏幕仅 ${messages.size} 条 < 目标 $k,取屏幕首条作锚点")
+            return FirstNewMessageInfo(messages.first(), nodes.first())
         }
+
+        val targetIdx = messages.size - k
+        log("[采集] 倒数第 $k 条 = 屏幕第 ${targetIdx + 1}/${messages.size}: ${messages[targetIdx].sender}: ${messages[targetIdx].content.take(30)}")
         return FirstNewMessageInfo(messages[targetIdx], nodes[targetIdx])
-    }
-
-    /**
-     * 在 messages 列表中找书签所在 index
-     *
-     * v1.8.12: 撤销 v1.8.11 的 i==0 唯一候选 fallback。
-     *   反例:用户重发完全相同的小程序卡片时,屏幕首条恰好是新发的同名消息(非书签),
-     *   matchCount==1 仍然成立,fallback 会把新消息误判成书签 → 漏采。
-     *   控件树在小程序卡片场景下无任何可区分属性(实测 dump 验证),无法靠指纹区分。
-     *
-     * 唯一规则:严格三重锁(sender+content + prev + prevPrev)全对才命中。
-     *   - 命中失败 → 返回 null → 外层(MessageForwarder)走"本轮跳过,保留旧书签"路径
-     *   - 老书签(prevContent 为空) → 跳过 prev/prevPrev 验证,单条匹配即可(向后兼容)
-     *
-     * @return messages 中书签的 index,找不到返回 null
-     */
-    private fun findBookmarkIndex(messages: List<Storage.Message>, bookmark: Storage.Bookmark): Int? {
-        if (messages.isEmpty()) return null
-
-        for (i in messages.indices.reversed()) {
-            if (!Storage.matchesBookmark(messages[i].sender, messages[i].content)) continue
-            if (bookmark.prevContent.isNotEmpty()) {
-                if (i == 0) continue
-                val prev = messages[i - 1]
-                if (prev.sender != bookmark.prevSender || prev.content.take(30) != bookmark.prevContent) continue
-                if (bookmark.prevPrevContent.isNotEmpty()) {
-                    if (i == 1) continue
-                    val prevPrev = messages[i - 2]
-                    if (prevPrev.sender != bookmark.prevPrevSender || prevPrev.content.take(30) != bookmark.prevPrevContent) continue
-                }
-            }
-            return i
-        }
-        return null
     }
 
     /**
@@ -279,7 +193,7 @@ object MessageCollector {
      *
      * 返回值:Pair(messages, nodes), 二者长度相等且一一对应
      *   - messages[i] 是从 nodes[i] 解析出来的消息
-     *   - 用于 findFirstNewMessageWithNode: 找到书签 idx 后直接拿 nodes[idx+1] 长按
+     *   - 用于 getNthFromBottomMessage: 取 nodes[size-k] 直接长按
      *
      * 这样绕开 findByText(content) 的限制——小程序/图片等 content 是合成串
      * (如 "[小程序] xxx") 在 TextView 里根本不存在,无法文本匹配,只能物理位置定位
@@ -694,8 +608,6 @@ object MessageCollector {
     }
 
     // ===== 数据类 =====
-
-    data class BookmarkResult(val index: Int, val message: Storage.Message, val totalOnScreen: Int)
 
     data class FirstNewMessageInfo(val message: Storage.Message, val node: AccessibilityNodeInfo)
 

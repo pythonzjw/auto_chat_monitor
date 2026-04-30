@@ -8,14 +8,13 @@ import android.view.accessibility.AccessibilityNodeInfo
 /**
  * 消息转发模块
  *
- * 完整转发流程：
- *   1. 滚到底部 → 记录最后一条消息
- *   2. 定位第一条新消息
- *   3. 转发前保存书签（宁可漏不可重）
- *   4. 长按 → 多选 → 滚到底全选 → 转发
- *   5. 在选群页面逐个搜索目标群并勾选（每批最多9个）
- *   6. 发送
- *   7. 如果目标群 > 9 个，回到源群重复 4-6
+ * v2.0 完整转发流程：
+ *   1. 滚到底部
+ *   2. 取倒数第 K 条作锚点(K = 调用方传入的未读徽章数)
+ *   3. 长按 → 多选 → 滚到底全选 → 转发
+ *   4. 在选群页面逐个搜索目标群并勾选（每批最多9个）
+ *   5. 发送
+ *   6. 如果目标群 > 9 个，回到源群重复 3-5
  */
 object MessageForwarder {
     private const val TAG = "Forwarder"
@@ -28,11 +27,18 @@ object MessageForwarder {
     private fun stopped(): Boolean = !CollectorService.isRunning
 
     /**
-     * 执行完整的转发流程（支持分批）
+     * v2.0: 执行完整的转发流程（支持分批）
      * 前提：当前已在源群聊天页面
+     *
+     * @param unreadCount 调用方读到的未读徽章数(由 Navigator.findUnreadCountForGroup 提供)
+     *                    将被截断到 Config.maxForwardCount 上限
      */
-    fun forwardNewMessages(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
-        log("[转发] 开始执行转发流程...")
+    fun forwardNewMessages(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        unreadCount: Int
+    ): Boolean {
+        log("[转发] 开始执行转发流程,目标:转最后 $unreadCount 条...")
 
         // 步骤1：滚动到底部
         log("[转发] 步骤1: 滚动到最新消息...")
@@ -40,58 +46,21 @@ object MessageForwarder {
         if (stopped()) return false
         GestureHelper.delay(500)
 
-        // 在底部一次性取 last/prev/prevPrev 三条快照(供三重锁书签)
-        // scrollUpToBookmark 后屏幕已离开底部,prev/prevPrev 必须在底部时取才真正相邻
-        val visibleAtBottom = MessageCollector.collectVisibleMessages(service)
-        val lastMsg = visibleAtBottom.lastOrNull()
-        val prevMsg = if (visibleAtBottom.size >= 2) visibleAtBottom[visibleAtBottom.size - 2] else null
-        val prevPrevMsg = if (visibleAtBottom.size >= 3) visibleAtBottom[visibleAtBottom.size - 3] else null
-        log("[转发] 最后一条: ${lastMsg?.let { "${it.sender}: ${it.content.take(30)}" } ?: "无"}")
-
-        // 步骤2：定位第一条新消息(同时拿到它的 ListView child 节点用于长按)
-        log("[转发] 步骤2: 定位第一条新消息...")
-        val bookmark = Storage.getBookmark()
-        var anchor: MessageCollector.FirstNewMessageInfo?
-
-        if (bookmark != null) {
-            log("[转发] 有书签，查找书签位置...")
-            val bookmarkInfo = MessageCollector.scrollUpToBookmark(service, metrics, 30)
-            if (stopped()) return false
-            if (bookmarkInfo != null) {
-                log("[转发] 找到书签(位置${bookmarkInfo.index + 1}/${bookmarkInfo.totalOnScreen})，取第一条新消息节点...")
-                anchor = MessageCollector.findFirstNewMessageWithNode(service)
-                if (anchor == null) {
-                    GestureHelper.swipeDown(service, metrics)
-                    anchor = MessageCollector.findFirstNewMessageWithNode(service)
-                }
-            } else {
-                log("[转发] ✗ 旧书签未找到,本轮跳过转发,保留旧书签等下次再找")
-                return false
-            }
-        } else {
-            log("[转发] 首次运行，回溯 ${Config.lookbackMinutes} 分钟...")
-            scrollUpForMinutes(service, metrics, Config.lookbackMinutes)
-            if (stopped()) return false
-            anchor = MessageCollector.findFirstNewMessageWithNode(service)
+        // 步骤2: 取倒数第 K 条(K = min(unreadCount, maxForwardCount))
+        val k = minOf(unreadCount, Config.maxForwardCount)
+        if (k < unreadCount) {
+            log("[转发] 徽章 $unreadCount 超过上限 ${Config.maxForwardCount},截断为 $k")
         }
-
+        log("[转发] 步骤2: 取倒数第 $k 条作锚点...")
+        val anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k)
         if (anchor == null) {
-            log("[转发] ✗ 没有找到新消息，跳过")
-            dumpOnFailure(service, "找不到新消息")
+            log("[转发] ✗ 取倒数第 $k 条失败")
+            dumpOnFailure(service, "取锚点失败")
             return false
         }
+        if (stopped()) return false
         val firstNewMsg = anchor.message
-        log("[转发] 第一条新消息: ${firstNewMsg.sender}: ${firstNewMsg.content.take(30)}")
-
-        // 步骤3：转发前保存书签(三重锁,prev/prevPrev 取自底部快照)
-        if (lastMsg != null) {
-            Storage.saveBookmark(
-                lastMsg.sender, lastMsg.content, lastMsg.time,
-                prevMsg?.sender ?: "", prevMsg?.content ?: "",
-                prevPrevMsg?.sender ?: "", prevPrevMsg?.content ?: ""
-            )
-            log("[转发] 步骤3: 书签已更新(含 prev/prevPrev)")
-        }
+        log("[转发] 锚点: ${firstNewMsg.sender}: ${firstNewMsg.content.take(30)}")
 
         // 分批转发
         val batches = Config.targetGroups.chunked(Config.BATCH_SIZE)
@@ -101,7 +70,7 @@ object MessageForwarder {
             if (stopped()) return false
             log("[转发] === 第 ${batchIdx + 1}/${batches.size} 批（${batch.size}个群）===")
 
-            // 第2批起需要回源群
+            // 第2批起需要回源群,重新滚到底 + 重新取倒数第 K 条节点
             if (batchIdx > 0) {
                 log("[转发] 回到源群...")
                 Navigator.enterGroup(service, metrics, Config.sourceGroup)
@@ -112,15 +81,14 @@ object MessageForwarder {
                 GestureHelper.delay(500)
             }
 
-            // 步骤4：长按第一条新消息
+            // 步骤4：长按锚点消息
             // 第1批: 用 step 2 拿到的 anchor.node(物理位置定位,精确)
-            // 第2+批: 书签已更新为 lastMsg, 重新调 findFirstNewMessageWithNode 已无意义
-            //         降级用旧 findMessageElement 按内容找(老逻辑兜底,小程序场景仍可能不准)
+            // 第2+批: 重新调 getNthFromBottomMessage 拿新节点(回源群后控件树已重建)
             log("[转发] 步骤4: 长按消息...")
             val msgElem: AccessibilityNodeInfo? = if (batchIdx == 0) {
                 anchor.node
             } else {
-                MessageCollector.findMessageElement(service, firstNewMsg)
+                MessageCollector.getNthFromBottomMessage(service, metrics, k)?.node
             }
             if (msgElem == null) {
                 log("[转发] ✗ 找不到消息控件，无法长按")
@@ -209,44 +177,6 @@ object MessageForwarder {
         repeat(8) {
             if (stopped()) return
             GestureHelper.swipeDown(service, metrics)
-        }
-    }
-
-    private fun scrollUpForMinutes(service: WeWorkAccessibilityService, metrics: DisplayMetrics, minutes: Int) {
-        var lastFirstContent = ""
-        var sameCount = 0
-        for (i in 0 until 10) {
-            if (stopped()) return
-            val messages = MessageCollector.collectVisibleMessages(service)
-
-            // 检查是否到达回溯时间边界
-            for (msg in messages) {
-                val msgTime = TimeParser.parseMessageTime(msg.time)
-                if (msgTime != null && !TimeParser.isWithinLookback(msgTime, minutes)) {
-                    log("[转发] 已到达回溯时间边界")
-                    return
-                }
-            }
-
-            // 检查是否到顶（连续 3 次内容不变 → 不再滑动）
-            val firstContent = messages.firstOrNull()?.content ?: ""
-            if (firstContent == lastFirstContent && firstContent.isNotEmpty()) {
-                sameCount++
-                if (sameCount >= 3) {
-                    log("[转发] 已到达消息列表顶部，停止回溯")
-                    return
-                }
-            } else {
-                sameCount = 0
-                lastFirstContent = firstContent
-            }
-
-            GestureHelper.swipeUp(service, metrics)
-            // 安全检查：滑动后确认还在聊天页面
-            if (!MessageCollector.isChatPageVisible(service)) {
-                log("[转发] 滑动后已离开聊天页面，停止回溯")
-                return
-            }
         }
     }
 
@@ -720,7 +650,7 @@ object MessageForwarder {
     /**
      * 在 ListView 行内挑出适合长按的"气泡节点"矩形
      *
-     * 背景:findFirstNewMessageWithNode 返回的 anchor.node 是 ListView 整行 RelativeLayout,
+     * 背景:getNthFromBottomMessage 返回的 anchor.node 是 ListView 整行 RelativeLayout,
      * 全宽 (0~screenWidth);其几何中心落在头像与气泡之间空白处,企微长按不响应。
      *
      * 策略:
