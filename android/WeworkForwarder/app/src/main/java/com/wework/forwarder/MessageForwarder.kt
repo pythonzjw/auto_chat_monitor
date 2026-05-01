@@ -47,14 +47,25 @@ object MessageForwarder {
             log("[转发] 徽章 $unreadCount 超过上限 ${Config.maxForwardCount},截断为 $k")
         }
 
-        log("[转发] 步骤1: 用 '以下为新消息' 分割线定位第一条未读...")
-        var anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
-        if (anchor == null) {
-            log("[转发] 分割线缺失, 兜底用 OCR K 计数 (K=$k)...")
+        // v2.2.1: 未读 ≤ 3 条时直接用 OCR K 计数。
+        // 少量未读企微一般不渲染分割线 → 主路径会空跑 swipeUp 浪费时间且最终兜底
+        var anchor: MessageCollector.FirstNewMessageInfo? = null
+        if (k <= 3) {
+            log("[转发] 步骤1: 未读 $k 条 (≤3),跳过分割线主路径,直接 OCR K 计数...")
             scrollToBottom(service, metrics)
             if (stopped()) return false
             GestureHelper.delay(500)
             anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
+        } else {
+            log("[转发] 步骤1: 用 '以下为新消息' 分割线定位第一条未读...")
+            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
+            if (anchor == null) {
+                log("[转发] 分割线缺失, 兜底用 OCR K 计数 (K=$k)...")
+                scrollToBottom(service, metrics)
+                if (stopped()) return false
+                GestureHelper.delay(500)
+                anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
+            }
         }
         if (anchor == null) {
             log("[转发] ✗ 分割线 + OCR K 计数双双失败")
@@ -87,6 +98,12 @@ object MessageForwarder {
             log("[转发] 步骤4: 长按消息...")
             val pressInfo: MessageCollector.FirstNewMessageInfo? = if (batchIdx == 0) {
                 anchor
+            } else if (k <= 3) {
+                // v2.2.1: 同步步骤1的短路逻辑,少量未读不渲染分割线 → 直接 OCR K 计数
+                log("[转发] 第${batchIdx + 1}批: 未读 $k 条 (≤3),直接 OCR K 计数")
+                scrollToBottom(service, metrics)
+                GestureHelper.delay(500)
+                MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
             } else {
                 MessageCollector.findFirstNewMessageByDivider(service, metrics)
                     ?: run {

@@ -101,11 +101,13 @@ object MessageCollector {
         // - 倒数第 K 条 = allMessages[size - K]
         // - 长按目标的 rect 始终来自最后一次 OCR(当前屏幕位置),可直接 dispatchGesture
         //
-        // 去重 key: content + rect.top 按 100px 分桶(滚动后 top 变,容错)
+        // v2.2.1: 去重 key 改回 sender+content+time(参照 v2.0.5)。
+        // 旧 "content + rect.top/100" 在 swipeUp 后 rect.top 偏移一屏,
+        // 同条消息会被算作 2 个不同 key → 累计虚高 → 倒数第 K 条索引偏离。
         val allMessages = mutableListOf<OcrCollector.OcrMessage>()
         val seenKeys = mutableSetOf<String>()
 
-        fun keyOf(m: OcrCollector.OcrMessage) = "${m.content}|${m.rect.top / 100}"
+        fun keyOf(m: OcrCollector.OcrMessage) = "${m.sender}|${m.content}|${m.time}"
 
         for (m in screenMessages) {
             if (seenKeys.add(keyOf(m))) allMessages.add(m)
@@ -165,7 +167,7 @@ object MessageCollector {
     fun findFirstNewMessageByDivider(
         service: WeWorkAccessibilityService,
         metrics: DisplayMetrics,
-        maxScrolls: Int = 10,
+        maxScrolls: Int = 20,  // v2.2.1: 10 → 20, 给 23+ 条多未读场景留余量
     ): FirstNewMessageInfo? {
         val dividerText = "以下为新消息"
         repeat(maxScrolls + 1) { iter ->
@@ -235,24 +237,30 @@ object MessageCollector {
     }
 
     /**
-     * 在 ListView 行内挑出气泡矩形(限定 top >= minTop)
-     * 复刻 MessageForwarder.findBubbleRect 的策略
+     * 在 ListView 行内挑出气泡的长按矩形(限定 y >= minTop)
+     *
+     * v2.2.1: 旧"取最大面积 clickable"在小程序卡片场景失败。
+     * 卡片 LinearLayout bounds 含整个卡片(标题+图+标签),area 大但中心 y 可能落到
+     * 卡片底部 padding 之外,长按穿透到下条消息。
+     *
+     * 改为: 取 listItem 中分割线下方部分的上半区域作为长按目标。
+     * 这样长按一定落在第 1 条新消息的"头像/标题/上半气泡"区域内,不会越界到下条。
+     *
+     * 选取 (cx, cy):
+     *   cx = listItem.centerX
+     *   cy = max(itemTop, minTop) + 100  ← 卡片头/气泡中上部
+     *        但不超过 child.bottom - 50  (避免溢出到下方)
      */
     private fun pickBubbleRectBelow(listItem: AccessibilityNodeInfo, minTop: Int): Rect {
-        val candidates = NodeFinder.findAll(listItem) {
-            it.isClickable
-                && it != listItem
-                && it.className?.toString() != "android.widget.ImageView"
-        }.map { node ->
-            val r = Rect()
-            node.getBoundsInScreen(r)
-            r
-        }.filter { it.top >= minTop && it.height() >= 30 && it.width() >= 80 }
-        candidates.maxByOrNull { it.width() * it.height() }?.let { return it }
-        // 兜底: 行节点本身
-        val fallback = Rect()
-        listItem.getBoundsInScreen(fallback)
-        return fallback
+        val itemRect = Rect()
+        listItem.getBoundsInScreen(itemRect)
+        val effectiveTop = maxOf(itemRect.top, minTop)
+        // 长按 y 落在分割线下方 100px 处(头像 / 卡片标题 / 气泡上半中心)
+        // 80-120 范围内对头像 (107px)、文字气泡 (~80px 高)、小程序卡片 (顶部 100px 区) 都安全
+        val targetY = (effectiveTop + 100).coerceIn(effectiveTop + 30, itemRect.bottom - 30)
+        val cx = itemRect.centerX()
+        // 返回一个以 (cx, targetY) 为中心的小 Rect, longPressAt 取 centerX/centerY
+        return Rect(cx - 40, targetY - 20, cx + 40, targetY + 20)
     }
 
     /**
