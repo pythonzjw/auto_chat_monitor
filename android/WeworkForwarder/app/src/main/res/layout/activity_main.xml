@@ -41,6 +41,31 @@
             android:textSize="12sp" />
     </LinearLayout>
 
+    <!-- 通知监听状态 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="12dp">
+
+        <TextView
+            android:id="@+id/tv_notification_status"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="通知监听：未开启（可选）"
+            android:textSize="14sp"
+            android:textColor="#FF9800" />
+
+        <Button
+            android:id="@+id/btn_notification"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="去开启"
+            android:textSize="12sp" />
+    </LinearLayout>
+
     <!-- 源群名称 -->
     <LinearLayout
         android:layout_width="match_parent"

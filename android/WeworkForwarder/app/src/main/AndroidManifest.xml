@@ -67,6 +67,16 @@
                 android:value="消息采集转发自动化任务" />
         </service>
 
+        <!-- 通知监听服务 — 监听企微通知实现低延迟消息感知 -->
+        <service
+            android:name=".WeWorkNotificationListener"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <!-- 文件分享 Provider -->
         <provider
             android:name="androidx.core.content.FileProvider"

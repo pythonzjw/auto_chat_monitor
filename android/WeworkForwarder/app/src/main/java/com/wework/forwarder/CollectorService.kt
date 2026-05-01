@@ -200,11 +200,13 @@ class CollectorService : Service() {
             return
         }
 
+        val useNotificationMode = WeWorkNotificationListener.isConnected()
+
         log("========================================")
         log("企业微信消息转发 v2.0 - 启动")
         log("源群: ${Config.sourceGroup}")
         log("目标群 (${Config.targetGroups.size}个): ${Config.targetGroups.joinToString(", ")}")
-        log("轮询间隔: ${Config.pollIntervalSeconds} 秒")
+        log("模式: ${if (useNotificationMode) "通知驱动(低延迟)" else "轮询(${Config.pollIntervalSeconds}秒)"}")
         log("单次最大转发: ${Config.maxForwardCount} 条")
         log("========================================")
 
@@ -223,24 +225,50 @@ class CollectorService : Service() {
         }
         delay(1000)
 
-        // Phase 2: 监控源群未读徽章
-        log("===== Phase 2: 监控源群未读徽章 =====")
+        // Phase 2: 监控源群 — 通知驱动 or 轮询
+        log("===== Phase 2: 监控源群 (${if (useNotificationMode) "通知驱动" else "轮询"}) =====")
+
+        if (useNotificationMode) {
+            NotificationSignal.drain()
+        }
+
         var consecutiveErrors = 0
         val maxConsecutiveErrors = 10
 
         while (isRunning && coroutineContext.isActive) {
             try {
                 floatingLog?.setStatus("waiting")
-                log("等待 ${Config.pollIntervalSeconds} 秒后扫描徽章...")
-                for (w in 0 until Config.pollIntervalSeconds) {
+
+                if (useNotificationMode) {
+                    // 通知模式: 挂起等待信号，5分钟超时做健康检查
+                    log("等待通知信号...")
+                    val signaled = withTimeoutOrNull(5 * 60 * 1000L) {
+                        NotificationSignal.await()
+                    }
                     if (!isRunning || !coroutineContext.isActive) return
-                    delay(1000)
+                    if (signaled != null) {
+                        log("[通知] 收到信号, 立即处理")
+                        delay(500)
+                    } else {
+                        if (!WeWorkNotificationListener.isConnected()) {
+                            log("[通知] 服务已断开, 本轮兜底扫描")
+                        } else {
+                            log("[通知] 5分钟超时, 兜底扫描")
+                        }
+                    }
+                } else {
+                    // 轮询模式: 原有逻辑
+                    log("等待 ${Config.pollIntervalSeconds} 秒后扫描徽章...")
+                    for (w in 0 until Config.pollIntervalSeconds) {
+                        if (!isRunning || !coroutineContext.isActive) return
+                        delay(1000)
+                    }
                 }
                 if (!isRunning || !coroutineContext.isActive) return
 
                 floatingLog?.setStatus("running")
 
-                // 确保企微在前台 + 在消息列表(用户可能切走了)
+                // 确保企微在前台 + 在消息列表
                 if (!service.isInWeWork()) {
                     log("企微不在前台,尝试恢复...")
                     Navigator.ensureWeWorkForeground(service)
@@ -256,17 +284,16 @@ class CollectorService : Service() {
                     else -> {
                         log("[扫描] 源群有 $unread 条未读,进入转发...")
                         if (!Navigator.enterGroup(service, metrics, Config.sourceGroup)) {
-                            log("✗ 进入源群失败")
+                            log("进入源群失败")
                             consecutiveErrors++
                             continue
                         }
                         delay(Config.enterGroupWaitSeconds * 1000L)
 
                         val ok = MessageForwarder.forwardNewMessages(service, metrics, unread)
-                        log(if (ok) "✓ 转发完成" else "✗ 转发失败")
+                        log(if (ok) "转发完成" else "转发失败")
                         if (!ok) floatingLog?.setStatus("error")
 
-                        // 退出回消息列表(供下一轮扫描)
                         Navigator.exitGroup(service)
                         delay(1000)
                     }
@@ -278,7 +305,7 @@ class CollectorService : Service() {
             } catch (e: Exception) {
                 consecutiveErrors++
                 floatingLog?.setStatus("error")
-                log("轮询异常 ($consecutiveErrors/$maxConsecutiveErrors): ${e.message}")
+                log("异常 ($consecutiveErrors/$maxConsecutiveErrors): ${e.message}")
                 if (consecutiveErrors >= maxConsecutiveErrors) {
                     log("连续错误次数过多，停止运行")
                     return
