@@ -161,13 +161,19 @@ object MessageCollector {
      * 替代旧的"OCR + K 计数"主路径(去重 key 用 rect.top 在 swipeUp 后失效, 累计虚高)。
      * 进入聊天时 WeWork 自动对齐到分割线, 所以调用前不要 scrollToBottom。
      *
+     * v2.2.2: 分割线渲染条件是"未读消息总高 > 屏幕高",不是条数。
+     * - 进群企微会自动对齐分割线到屏幕中部 → 第 0 轮就命中
+     * - 消息没超屏 → 分割线**不渲染**, 滚多少次都找不到, 立刻返回 null 走兜底
+     * - 用户已自己滑过 → 至多 swipeUp 几次能找回
+     * 所以 maxScrolls 不需要大,3 次足够覆盖 99% 场景, 多了纯浪费。
+     *
      * 流程: findByText("以下为新消息") → 找到 → 在 ListView 中找 top > divider.bottom 的首个气泡
      *      未找到 → swipeUp 至多 maxScrolls 次重试 → 仍找不到返回 null 让调用方走兜底
      */
     fun findFirstNewMessageByDivider(
         service: WeWorkAccessibilityService,
         metrics: DisplayMetrics,
-        maxScrolls: Int = 20,  // v2.2.1: 10 → 20, 给 23+ 条多未读场景留余量
+        maxScrolls: Int = 3,  // v2.2.2: 20 → 3, 不存在的分割线滚再多也找不到
     ): FirstNewMessageInfo? {
         val dividerText = "以下为新消息"
         repeat(maxScrolls + 1) { iter ->
