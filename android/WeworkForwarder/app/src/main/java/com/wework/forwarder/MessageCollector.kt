@@ -106,7 +106,7 @@ object MessageCollector {
 
         // 屏幕可见消息不够(k > 屏幕行数): 上滑加载更多历史消息
         // 追踪"已滑出屏幕下方"的消息数,用来定位目标在当前屏幕中的位置
-        fun keyOf(m: Storage.Message) = "${m.sender}|${m.content}|${m.time}"
+        fun keyOf(m: Storage.Message) = "${m.sender}|${m.content}"
         var prevKeys = messages.map { keyOf(it) }.toSet()
         val allSeenKeys = prevKeys.toMutableSet()
         var messagesBelowScreen = 0
@@ -155,19 +155,14 @@ object MessageCollector {
      * 替代旧的"OCR + K 计数"主路径(去重 key 用 rect.top 在 swipeUp 后失效, 累计虚高)。
      * 进入聊天时 WeWork 自动对齐到分割线, 所以调用前不要 scrollToBottom。
      *
-     * v2.2.2: 分割线渲染条件是"未读消息总高 > 屏幕高",不是条数。
-     * - 进群企微会自动对齐分割线到屏幕中部 → 第 0 轮就命中
-     * - 消息没超屏 → 分割线**不渲染**, 滚多少次都找不到, 立刻返回 null 走兜底
-     * - 用户已自己滑过 → 至多 swipeUp 几次能找回
-     * 所以 maxScrolls 不需要大,3 次足够覆盖 99% 场景, 多了纯浪费。
-     *
-     * 流程: findByText("以下为新消息") → 找到 → 在 ListView 中找 top > divider.bottom 的首个气泡
-     *      未找到 → swipeUp 至多 maxScrolls 次重试 → 仍找不到返回 null 让调用方走兜底
+     * v2.3.4: 进群时企微自动对齐到分割线,第 0 轮就该命中。
+     * 分割线不存在(消息没超屏)时滚多少次都找不到,不浪费时间。
+     * maxScrolls 默认 0: 只看当前屏幕,不主动 swipeUp。
      */
     fun findFirstNewMessageByDivider(
         service: WeWorkAccessibilityService,
         metrics: DisplayMetrics,
-        maxScrolls: Int = 3,  // v2.2.2: 20 → 3, 不存在的分割线滚再多也找不到
+        maxScrolls: Int = 0,
     ): FirstNewMessageInfo? {
         val dividerText = "以下为新消息"
         repeat(maxScrolls + 1) { iter ->
