@@ -243,23 +243,50 @@ object MessageCollector {
      * 卡片 LinearLayout bounds 含整个卡片(标题+图+标签),area 大但中心 y 可能落到
      * 卡片底部 padding 之外,长按穿透到下条消息。
      *
-     * 改为: 取 listItem 中分割线下方部分的上半区域作为长按目标。
-     * 这样长按一定落在第 1 条新消息的"头像/标题/上半气泡"区域内,不会越界到下条。
-     *
-     * 选取 (cx, cy):
-     *   cx = listItem.centerX
-     *   cy = max(itemTop, minTop) + 100  ← 卡片头/气泡中上部
-     *        但不超过 child.bottom - 50  (避免溢出到下方)
+     * v2.3.3: 旧版用 itemRect.centerX() = 屏幕正中(540) 作为长按 x,
+     * 但别人消息的气泡在左侧(bounds 约 [149,xxx,467,xxx]),cx=540 落在空白区。
+     * 改为: 在 listItem 内找真实 clickable 气泡,取气泡的实际中心坐标。
      */
     private fun pickBubbleRectBelow(listItem: AccessibilityNodeInfo, minTop: Int): Rect {
         val itemRect = Rect()
         listItem.getBoundsInScreen(itemRect)
+
+        // 在 listItem 内找 clickable 气泡(排除头像 ImageView)
+        val candidates = NodeFinder.findAll(listItem) {
+            it.isClickable
+                && it != listItem
+                && it.className?.toString() != "android.widget.ImageView"
+        }.mapNotNull { node ->
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            if (r.bottom > minTop && r.height() >= 30 && r.width() >= 80) r else null
+        }
+        val bubble = candidates.maxByOrNull { it.width() * it.height() }
+
+        if (bubble != null) {
+            val cy = (maxOf(bubble.top, minTop) + bubble.height() / 3)
+                .coerceIn(bubble.top + 20, bubble.bottom - 20)
+            log("[分割线长按] 找到气泡 bounds=$bubble, 长按 (${bubble.centerX()}, $cy)")
+            return Rect(bubble.centerX() - 40, cy - 20, bubble.centerX() + 40, cy + 20)
+        }
+
+        // 兜底: 取 listItem 中非空 TextView 的位置(排除时间标签)
+        val timeRegex = Regex("^\\d{1,2}:\\d{2}(:\\d{2})?$")
+        val textRect = NodeFinder.getAllTexts(listItem)
+            .filter { it.text.isNotBlank() && !timeRegex.matches(it.text.trim()) && it.bounds.bottom > minTop }
+            .maxByOrNull { it.bounds.width() * it.bounds.height() }
+            ?.bounds
+        if (textRect != null) {
+            val cy = (maxOf(textRect.top, minTop) + 30).coerceAtMost(textRect.bottom - 10)
+            log("[分割线长按] 文本兜底 bounds=$textRect, 长按 (${textRect.centerX()}, $cy)")
+            return Rect(textRect.centerX() - 40, cy - 20, textRect.centerX() + 40, cy + 20)
+        }
+
+        // 终极兜底: 分割线下方 + 行节点中心
         val effectiveTop = maxOf(itemRect.top, minTop)
-        // 长按 y 落在分割线下方 100px 处(头像 / 卡片标题 / 气泡上半中心)
-        // 80-120 范围内对头像 (107px)、文字气泡 (~80px 高)、小程序卡片 (顶部 100px 区) 都安全
         val targetY = (effectiveTop + 100).coerceIn(effectiveTop + 30, itemRect.bottom - 30)
         val cx = itemRect.centerX()
-        // 返回一个以 (cx, targetY) 为中心的小 Rect, longPressAt 取 centerX/centerY
+        log("[分割线长按] 终极兜底 itemRect=$itemRect, 长按 ($cx, $targetY)")
         return Rect(cx - 40, targetY - 20, cx + 40, targetY + 20)
     }
 
