@@ -49,18 +49,18 @@ object MessageForwarder {
 
         // v2.2.2: 分割线渲染条件是"未读消息总高 > 屏幕高",不是条数。
         // 直接试探分割线: 存在企微自动对齐到屏幕,第 0 轮就能找到;
-        // 不存在(消息没超屏)就立即走 OCR K 计数兜底,不要空跑 swipeUp。
+        // 不存在(消息没超屏)就立即走 ListView K 计数兜底,不要空跑 swipeUp。
         log("[转发] 步骤1: 试探 '以下为新消息' 分割线...")
         var anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
         if (anchor == null) {
-            log("[转发] 分割线不存在或找不到, 走 OCR K 计数 (K=$k)...")
+            log("[转发] 分割线不存在或找不到, 走 ListView K 计数 (K=$k)...")
             scrollToBottom(service, metrics)
             if (stopped()) return false
             GestureHelper.delay(500)
             anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
         }
         if (anchor == null) {
-            log("[转发] ✗ 分割线 + OCR K 计数双双失败")
+            log("[转发] ✗ 分割线 + ListView K 计数双双失败")
             dumpOnFailure(service, "取锚点失败")
             return false
         }
@@ -86,14 +86,14 @@ object MessageForwarder {
 
             // 步骤4：长按锚点消息
             // 第1批: 用步骤1 拿到的 anchor
-            // 第2+批: 重新走 分割线 → OCR K 计数兜底
+            // 第2+批: 重新走 分割线 → ListView K 计数兜底
             log("[转发] 步骤4: 长按消息...")
             val pressInfo: MessageCollector.FirstNewMessageInfo? = if (batchIdx == 0) {
                 anchor
             } else {
                 MessageCollector.findFirstNewMessageByDivider(service, metrics)
                     ?: run {
-                        log("[转发] 第${batchIdx + 1}批: 分割线不存在/找不到, 走 OCR K 计数")
+                        log("[转发] 第${batchIdx + 1}批: 分割线不存在/找不到, 走 ListView K 计数")
                         scrollToBottom(service, metrics)
                         GestureHelper.delay(500)
                         MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
@@ -104,8 +104,7 @@ object MessageForwarder {
                 dumpOnFailure(service, "找不到锚点_批${batchIdx + 1}")
                 if (batchIdx == 0) return false else continue
             }
-            // v2.1.0: OCR rect 直接是消息气泡的 boundingBox,绕开 findBubbleRect
-            // 旧 NodeInfo 路径作降级:仅在 rect 为空(理论不会)时使用
+            // v2.3.0: ListView 子节点路径返回 node + rect=null, findBubbleRect 在 node 内找气泡
             val pressRect = pressInfo.rect ?: pressInfo.node?.let { findBubbleRect(it) }
             if (pressRect == null) {
                 log("[转发] ✗ 锚点既无 rect 也无 node,无法定位长按坐标")

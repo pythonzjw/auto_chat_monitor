@@ -81,78 +81,30 @@ object MessageCollector {
     ): FirstNewMessageInfo? {
         if (k < 1) return null
 
-        // v2.1.0: 数据源切到 OCR (截屏 + MLKit 中文识别)
-        // 旧路径(parseListItem)依赖头像锚点,头像缺失/截断时漏消息;
-        // OCR 直接读屏幕像素,只关心文字。
-        var screenMessages = OcrCollector.collectFromScreen(service)
-        if (screenMessages == null) {
-            log("[采集] OCR 不可用 (Android < 11 或截屏失败),无法取倒数第 $k 条")
-            return null
-        }
-        if (screenMessages.isEmpty()) {
-            log("[采集] OCR 屏幕无消息,无法取倒数第 $k 条")
+        // v2.3.0: 数据源从 OCR 切回 ListView 子节点
+        // OCR (splitToMessages) 的 TextBlock 聚合无论怎么调阈值都有边界 case,
+        // ListView 每个 child 天然对应一行,不存在拆分/聚合问题。
+        val root = service.getRootNode() ?: run {
+            log("[采集] 控件树为空,无法取倒数第 $k 条")
             return null
         }
 
-        // 累积策略:
-        // - 第一批 addAll(顺序: 屏幕从上到下 = 旧到新)
-        // - 后续 swipeUp 加载更老消息 → 新增的整批 unshift 到列表头
-        // - 最终 allMessages 按时间从最早到最新排序
-        // - 倒数第 K 条 = allMessages[size - K]
-        // - 长按目标的 rect 始终来自最后一次 OCR(当前屏幕位置),可直接 dispatchGesture
-        //
-        // v2.2.1: 去重 key 改回 sender+content+time(参照 v2.0.5)。
-        // 旧 "content + rect.top/100" 在 swipeUp 后 rect.top 偏移一屏,
-        // 同条消息会被算作 2 个不同 key → 累计虚高 → 倒数第 K 条索引偏离。
-        val allMessages = mutableListOf<OcrCollector.OcrMessage>()
-        val seenKeys = mutableSetOf<String>()
+        val screenWidth = metrics.widthPixels
+        val (messages, nodes) = collectByStructureWithNodes(root, screenWidth)
+        log("[采集] ListView 解析: ${messages.size} 条消息 (k=$k)")
 
-        fun keyOf(m: OcrCollector.OcrMessage) = "${m.sender}|${m.content}|${m.time}"
-
-        for (m in screenMessages) {
-            if (seenKeys.add(keyOf(m))) allMessages.add(m)
-        }
-        log("[采集] 初始 OCR ${screenMessages.size} 条, 累计 ${allMessages.size} 条")
-
-        var swipeUps = 0
-        var consecutiveNoNew = 0
-        while (allMessages.size < expectedMinCount && swipeUps < 30 && consecutiveNoNew < 3) {
-            if (!CollectorService.isRunning) return null
-            GestureHelper.swipeUp(service, metrics)
-            GestureHelper.delay(300)
-            if (!isChatPageVisible(service)) {
-                log("[采集] swipeUp 后离开聊天页面,停止")
-                return null
-            }
-            screenMessages = OcrCollector.collectFromScreen(service) ?: emptyList()
-            swipeUps++
-
-            // 新屏幕去重后,把新增的整批 unshift 到 allMessages 头(它们是更老的消息)
-            val newOnes = mutableListOf<OcrCollector.OcrMessage>()
-            for (m in screenMessages) {
-                if (seenKeys.add(keyOf(m))) newOnes.add(m)
-            }
-            if (newOnes.isNotEmpty()) {
-                allMessages.addAll(0, newOnes)
-                consecutiveNoNew = 0
-            } else {
-                consecutiveNoNew++
-            }
-
-            log("[采集] swipeUp 第 $swipeUps 轮，OCR ${screenMessages.size} 条，新增 ${newOnes.size} 条，累计 ${allMessages.size} 条 (目标 >= $expectedMinCount, 连续无新增 $consecutiveNoNew/3)")
+        if (messages.isEmpty()) {
+            log("[采集] ListView 无消息,无法取倒数第 $k 条")
+            return null
         }
 
-        if (consecutiveNoNew >= 3) {
-            log("[采集] 连续 3 轮无新增，已到顶。累计 ${allMessages.size} 条")
-        } else if (allMessages.size < expectedMinCount) {
-            log("[采集] swipeUp ${swipeUps} 轮后累计 ${allMessages.size} 条 < 目标 $expectedMinCount")
-        }
+        val actualK = minOf(k, messages.size)
+        val targetIdx = messages.size - actualK
+        val targetMsg = messages[targetIdx]
+        val targetNode = nodes[targetIdx]
 
-        val actualK = Math.min(k, allMessages.size)
-        val targetIdx = allMessages.size - actualK
-        val target = allMessages[targetIdx]
-        log("[采集] 倒数第 $actualK 条 = 累计第 ${targetIdx + 1}/${allMessages.size}: ${target.sender}: ${target.content.take(30)}")
-        return FirstNewMessageInfo(target.toStorageMsg(), node = null, rect = target.rect)
+        log("[采集] 倒数第 $actualK 条 = 第 ${targetIdx + 1}/${messages.size}: ${targetMsg.sender}: ${targetMsg.content.take(30)}")
+        return FirstNewMessageInfo(targetMsg, node = targetNode, rect = null)
     }
 
     /**
