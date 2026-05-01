@@ -154,6 +154,108 @@ object MessageCollector {
     }
 
     /**
+     * v2.2.0: 用 "以下为新消息" 分割线定位第一条未读消息
+     *
+     * 替代旧的"OCR + K 计数"主路径(去重 key 用 rect.top 在 swipeUp 后失效, 累计虚高)。
+     * 进入聊天时 WeWork 自动对齐到分割线, 所以调用前不要 scrollToBottom。
+     *
+     * 流程: findByText("以下为新消息") → 找到 → 在 ListView 中找 top > divider.bottom 的首个气泡
+     *      未找到 → swipeUp 至多 maxScrolls 次重试 → 仍找不到返回 null 让调用方走兜底
+     */
+    fun findFirstNewMessageByDivider(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        maxScrolls: Int = 10,
+    ): FirstNewMessageInfo? {
+        val dividerText = "以下为新消息"
+        repeat(maxScrolls + 1) { iter ->
+            if (!CollectorService.isRunning) return null
+            val root = service.getRootNode() ?: return null
+            val divider = NodeFinder.findByText(root, dividerText)
+                ?: NodeFinder.findByTextContains(root, "新消息")  // 兼容 "X条新消息" 变体
+            if (divider != null) {
+                val dRect = Rect()
+                divider.getBoundsInScreen(dRect)
+                val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+                    ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+                if (chatList == null) {
+                    log("[分割线] 命中分割线但找不到 ListView")
+                    return null
+                }
+                val firstNew = findFirstBubbleBelow(chatList, dRect.bottom, service)
+                if (firstNew != null) {
+                    log("[分割线] 命中 y=${dRect.centerY()}, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
+                    return firstNew
+                }
+                // 命中分割线但其下方暂无气泡: 列表恰好停在分割线位置, swipeDown 让新消息显出
+                log("[分割线] 命中分割线但下方无气泡, swipeDown 让新消息显出")
+                GestureHelper.swipeDown(service, metrics)
+                GestureHelper.delay(400)
+                return@repeat
+            }
+            if (iter == maxScrolls) {
+                log("[分割线] $maxScrolls 次 swipeUp 仍未命中, 走 OCR 兜底")
+                return null
+            }
+            GestureHelper.swipeUp(service, metrics)  // 查看旧消息(分割线在屏幕上方)
+            GestureHelper.delay(400)
+        }
+        return null
+    }
+
+    /**
+     * 在 ListView 子节点中找首个 top > minTop 的消息气泡
+     * 复用 parseListItem 解析消息, 跳过分割线/时间/系统消息
+     */
+    private fun findFirstBubbleBelow(
+        chatList: AccessibilityNodeInfo,
+        minTop: Int,
+        service: WeWorkAccessibilityService,
+    ): FirstNewMessageInfo? {
+        val halfWidth = service.resources.displayMetrics.widthPixels / 2
+        var currentTime = ""
+        for (i in 0 until chatList.childCount) {
+            val child = chatList.getChild(i) ?: continue
+            val rect = Rect()
+            child.getBoundsInScreen(rect)
+            // child 完全在分割线之上 → 已读, 跳过
+            if (rect.bottom <= minTop) continue
+            when (val parsed = parseListItem(child, halfWidth, currentTime)) {
+                is ParseResult.TimeLabel -> currentTime = parsed.time
+                is ParseResult.Skip -> continue
+                is ParseResult.Msg -> {
+                    // 同一 child 可能 [分割线 + 时间 + 第一条新消息] 共存(见 dump_手动 child #2),
+                    // minTop 过滤确保长按落在分割线下方而不是分割线本身
+                    val bubbleRect = pickBubbleRectBelow(child, minTop)
+                    return FirstNewMessageInfo(parsed.message, node = child, rect = bubbleRect)
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * 在 ListView 行内挑出气泡矩形(限定 top >= minTop)
+     * 复刻 MessageForwarder.findBubbleRect 的策略
+     */
+    private fun pickBubbleRectBelow(listItem: AccessibilityNodeInfo, minTop: Int): Rect {
+        val candidates = NodeFinder.findAll(listItem) {
+            it.isClickable
+                && it != listItem
+                && it.className?.toString() != "android.widget.ImageView"
+        }.map { node ->
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            r
+        }.filter { it.top >= minTop && it.height() >= 30 && it.width() >= 80 }
+        candidates.maxByOrNull { it.width() * it.height() }?.let { return it }
+        // 兜底: 行节点本身
+        val fallback = Rect()
+        listItem.getBoundsInScreen(fallback)
+        return fallback
+    }
+
+    /**
      * 在屏幕上找到消息内容对应的控件（用于长按）
      */
     fun findMessageElement(service: WeWorkAccessibilityService, msg: Storage.Message): AccessibilityNodeInfo? {

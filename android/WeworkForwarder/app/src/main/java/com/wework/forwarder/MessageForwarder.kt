@@ -40,21 +40,24 @@ object MessageForwarder {
     ): Boolean {
         log("[转发] 开始执行转发流程,目标:转最后 $unreadCount 条...")
 
-        // 步骤1：滚动到底部
-        log("[转发] 步骤1: 滚动到最新消息...")
-        scrollToBottom(service, metrics)
-        if (stopped()) return false
-        GestureHelper.delay(500)
-
-        // 步骤2: 取倒数第 K 条(K = min(unreadCount, maxForwardCount))
+        // v2.2.0: 主路径用 "以下为新消息" 分割线定位锚点(进入聊天 WeWork 自动对齐到分割线)
+        // 不再先 scrollToBottom 把分割线滚出屏幕
         val k = minOf(unreadCount, Config.maxForwardCount)
         if (k < unreadCount) {
             log("[转发] 徽章 $unreadCount 超过上限 ${Config.maxForwardCount},截断为 $k")
         }
-        log("[转发] 步骤2: 取倒数第 $k 条作锚点...")
-        val anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
+
+        log("[转发] 步骤1: 用 '以下为新消息' 分割线定位第一条未读...")
+        var anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
         if (anchor == null) {
-            log("[转发] ✗ 取倒数第 $k 条失败")
+            log("[转发] 分割线缺失, 兜底用 OCR K 计数 (K=$k)...")
+            scrollToBottom(service, metrics)
+            if (stopped()) return false
+            GestureHelper.delay(500)
+            anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
+        }
+        if (anchor == null) {
+            log("[转发] ✗ 分割线 + OCR K 计数双双失败")
             dumpOnFailure(service, "取锚点失败")
             return false
         }
@@ -70,25 +73,28 @@ object MessageForwarder {
             if (stopped()) return false
             log("[转发] === 第 ${batchIdx + 1}/${batches.size} 批（${batch.size}个群）===")
 
-            // 第2批起需要回源群,重新滚到底 + 重新取倒数第 K 条节点
+            // 第2批起需要回源群,不先 scrollToBottom (保留分割线自然位置)
             if (batchIdx > 0) {
                 log("[转发] 回到源群...")
                 Navigator.enterGroup(service, metrics, Config.sourceGroup)
                 if (stopped()) return false
                 GestureHelper.delayExact(Config.enterGroupWaitSeconds * 1000L)
-                scrollToBottom(service, metrics)
-                if (stopped()) return false
-                GestureHelper.delay(500)
             }
 
             // 步骤4：长按锚点消息
-            // 第1批: 用 step 2 拿到的 anchor(OCR rect 直接可用)
-            // 第2+批: 回源群 + 重新滚到底后,重新调 getNthFromBottomMessage
+            // 第1批: 用步骤1 拿到的 anchor
+            // 第2+批: 重新走 分割线 → OCR K 计数兜底
             log("[转发] 步骤4: 长按消息...")
             val pressInfo: MessageCollector.FirstNewMessageInfo? = if (batchIdx == 0) {
                 anchor
             } else {
-                MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
+                MessageCollector.findFirstNewMessageByDivider(service, metrics)
+                    ?: run {
+                        log("[转发] 第${batchIdx + 1}批: 分割线缺失,兜底 OCR K 计数")
+                        scrollToBottom(service, metrics)
+                        GestureHelper.delay(500)
+                        MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
+                    }
             }
             if (pressInfo == null) {
                 log("[转发] ✗ 取锚点失败,无法长按")
@@ -213,8 +219,10 @@ object MessageForwarder {
                     ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
             }
             val curChildCount = chatList?.childCount ?: 0
-            val curContent = MessageCollector.collectVisibleMessages(service)
-                .lastOrNull()?.content ?: ""
+            // v2.2.0: 多选模式下 ListView 每行加 checkbox, parseListItem 全 Skip → curContent="" 永不稳定。
+            // OCR 读屏幕像素不依赖 NodeInfo 结构, checkbox 不影响识别。
+            val curContent = OcrCollector.collectFromScreen(service)
+                ?.lastOrNull()?.content ?: ""
 
             // 按钮消失保护：滑过头会让按钮被滑出屏幕，需要 swipeUp 恢复
             var btn = findSelectToHereDown(service)
