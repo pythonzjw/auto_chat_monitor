@@ -42,8 +42,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var tvAccessibilityStatus: TextView
     private lateinit var btnAccessibility: Button
-    private lateinit var tvNotificationStatus: TextView
-    private lateinit var btnNotification: Button
     private lateinit var etSourceGroup: EditText
     private lateinit var etTargetGroups: EditText
     private lateinit var etLookback: EditText
@@ -132,14 +130,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateAccessibilityStatus()
-        updateNotificationListenerStatus()
     }
 
     private fun initViews() {
         tvAccessibilityStatus = findViewById(R.id.tv_accessibility_status)
         btnAccessibility = findViewById(R.id.btn_accessibility)
-        tvNotificationStatus = findViewById(R.id.tv_notification_status)
-        btnNotification = findViewById(R.id.btn_notification)
         etSourceGroup = findViewById(R.id.et_source_group)
         etTargetGroups = findViewById(R.id.et_target_groups)
         etLookback = findViewById(R.id.et_lookback)
@@ -165,10 +160,6 @@ class MainActivity : AppCompatActivity() {
     private fun setupButtons() {
         btnAccessibility.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
-
-        btnNotification.setOnClickListener {
-            startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
         }
 
         btnStart.setOnClickListener { startCollector() }
@@ -208,6 +199,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateAccessibilityStatus() {
+        // 授权未通过时 views 未 initialized,直接返回避免 lateinit 异常
         if (!::tvAccessibilityStatus.isInitialized) return
         if (isAccessibilityServiceEnabled()) {
             tvAccessibilityStatus.text = "无障碍服务：已开启"
@@ -217,24 +209,6 @@ class MainActivity : AppCompatActivity() {
             tvAccessibilityStatus.text = "无障碍服务：未开启"
             tvAccessibilityStatus.setTextColor(0xFFF44336.toInt())
             btnAccessibility.text = "去开启"
-        }
-    }
-
-    private fun isNotificationListenerEnabled(): Boolean {
-        val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
-        return flat?.contains("$packageName/${WeWorkNotificationListener::class.java.name}") == true
-    }
-
-    private fun updateNotificationListenerStatus() {
-        if (!::tvNotificationStatus.isInitialized) return
-        if (isNotificationListenerEnabled()) {
-            tvNotificationStatus.text = "通知监听：已开启（低延迟模式）"
-            tvNotificationStatus.setTextColor(0xFF43A047.toInt())
-            btnNotification.text = "已开启"
-        } else {
-            tvNotificationStatus.text = "通知监听：未开启（可选，开启后降低延迟）"
-            tvNotificationStatus.setTextColor(0xFFFF9800.toInt())
-            btnNotification.text = "去开启"
         }
     }
 
@@ -279,10 +253,6 @@ class MainActivity : AppCompatActivity() {
         if (Config.targetGroups.isEmpty()) {
             Toast.makeText(this, "请填写至少一个目标群", Toast.LENGTH_SHORT).show()
             return
-        }
-
-        if (!isNotificationListenerEnabled()) {
-            Toast.makeText(this, "提示：开启通知监听权限可降低消息延迟", Toast.LENGTH_SHORT).show()
         }
 
         // 提示分批信息
