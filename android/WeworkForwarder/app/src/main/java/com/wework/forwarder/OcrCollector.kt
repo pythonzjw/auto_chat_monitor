@@ -151,6 +151,19 @@ object OcrCollector {
         """^(\d{1,2}:\d{2}|昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天]|\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月\d{1,2}日)(\s+\d{1,2}:\d{2})?$"""
     )
 
+    // 系统提示(未读分隔线、撤回、入群): 不入消息列表
+    // v2.1.2 现场:"公 13条新消息" 分隔线被当成消息 → 长按出不来多选
+    private fun isSystemNotice(content: String): Boolean {
+        if (content.length > 24) return false
+        return content.contains("条新消息") ||
+            content.contains("以下是新消息") ||
+            content.contains("以下为新消息") ||
+            content.endsWith("撤回了一条消息") ||
+            content.contains("加入了群聊") ||
+            content.contains("退出群聊") ||
+            content.contains("移出群聊")
+    }
+
     private fun splitToMessages(text: Text, screenWidth: Int, screenHeight: Int): List<OcrMessage> {
         val halfWidth = screenWidth / 2
         // 聊天区:顶部 10% 留给状态栏+标题栏,底部 15% 留给输入区
@@ -175,6 +188,12 @@ object OcrCollector {
             val isCenteredX = rect.centerX() in (screenWidth * 35 / 100)..(screenWidth * 65 / 100)
             if (isCenteredX && content.length <= 16 && timeRegex.matches(content)) {
                 currentTime = content
+                blockMergeAcrossTime = true
+                continue
+            }
+
+            // 未读分隔线 / 撤回 / 入群退群 等系统提示:不入列表,且阻断聚合
+            if (isSystemNotice(content)) {
                 blockMergeAcrossTime = true
                 continue
             }
