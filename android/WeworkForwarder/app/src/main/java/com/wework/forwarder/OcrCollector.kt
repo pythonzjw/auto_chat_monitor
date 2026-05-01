@@ -164,6 +164,8 @@ object OcrCollector {
 
         val messages = mutableListOf<OcrMessage>()
         var currentTime = ""
+        // 时间标签后的第一条消息禁止与之前的合并(跨时间段不属于同气泡)
+        var blockMergeAcrossTime = false
 
         for ((rect, block) in blocks) {
             val content = block.text.trim()
@@ -173,11 +175,38 @@ object OcrCollector {
             val isCenteredX = rect.centerX() in (screenWidth * 35 / 100)..(screenWidth * 65 / 100)
             if (isCenteredX && content.length <= 16 && timeRegex.matches(content)) {
                 currentTime = content
+                blockMergeAcrossTime = true
                 continue
             }
 
             val sender = if (rect.centerX() < halfWidth) "群成员" else "我"
-            messages.add(OcrMessage(sender, content, currentTime, rect))
+
+            // 聚合判定:与上一条同侧 + 垂直间距 ≤ 当前文本块高度 → 同一气泡的另一行
+            // 一条小程序卡片/多行文字消息会被 MLKit 切成多个 TextBlock,必须聚合,
+            // 否则 25 个 block 会被当成 25 条消息,直接骗过滚动加载逻辑(见 v2.1.1 BUG)。
+            val last = messages.lastOrNull()
+            val rowHeight = rect.height().coerceAtLeast(1)
+            val gap = if (last != null) rect.top - last.rect.bottom else Int.MAX_VALUE
+            val canMerge = !blockMergeAcrossTime &&
+                last != null &&
+                last.sender == sender &&
+                gap <= rowHeight
+            blockMergeAcrossTime = false
+
+            if (canMerge && last != null) {
+                val mergedRect = Rect(
+                    minOf(last.rect.left, rect.left),
+                    last.rect.top,
+                    maxOf(last.rect.right, rect.right),
+                    rect.bottom,
+                )
+                messages[messages.size - 1] = last.copy(
+                    content = last.content + "\n" + content,
+                    rect = mergedRect,
+                )
+            } else {
+                messages.add(OcrMessage(sender, content, currentTime, rect))
+            }
         }
 
         return messages
