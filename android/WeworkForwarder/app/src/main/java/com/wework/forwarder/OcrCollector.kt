@@ -146,9 +146,8 @@ object OcrCollector {
         return result
     }
 
-    // 时间标签:14:30 / 昨天 14:30 / 周一 14:30 / 12月25日 / 2025年12月25日 等
     private val timeRegex = Regex(
-        """^(\d{1,2}:\d{2}|昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天]|\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月\d{1,2}日)(\s+\d{1,2}:\d{2})?$"""
+        """^(上午\s*|下午\s*)?(\d{1,2}:\d{2}|昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天]|\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月\d{1,2}日)(\s+(上午\s*|下午\s*)?\d{1,2}:\d{2})?$"""
     )
 
     // 系统提示(未读分隔线、撤回、入群): 不入消息列表
@@ -166,9 +165,9 @@ object OcrCollector {
 
     private fun splitToMessages(text: Text, screenWidth: Int, screenHeight: Int): List<OcrMessage> {
         val halfWidth = screenWidth / 2
-        // 聊天区:顶部 10% 留给状态栏+标题栏,底部 15% 留给输入区
-        val chatTop = (screenHeight * 0.10).toInt()
-        val chatBottom = (screenHeight * 0.85).toInt()
+        // 聊天区:顶部 13% 留给状态栏+标题栏,底部 17% 留给输入区
+        val chatTop = (screenHeight * 0.13).toInt()
+        val chatBottom = (screenHeight * 0.83).toInt()
 
         val blocks = text.textBlocks
             .mapNotNull { b -> b.boundingBox?.let { it to b } }
@@ -200,16 +199,25 @@ object OcrCollector {
 
             val sender = if (rect.centerX() < halfWidth) "群成员" else "我"
 
-            // 聚合判定:与上一条同侧 + 垂直间距 ≤ 当前文本块高度 → 同一气泡的另一行
-            // 一条小程序卡片/多行文字消息会被 MLKit 切成多个 TextBlock,必须聚合,
-            // 否则 25 个 block 会被当成 25 条消息,直接骗过滚动加载逻辑(见 v2.1.1 BUG)。
+            // 聚合判定:同侧 + 垂直间距在阈值内 + 水平有重叠 → 同一气泡的另一行
+            // MLKit 把一条消息(多行文字/小程序卡片/群成员名字+气泡)切成多个 TextBlock,
+            // 必须聚合回来,否则消息数虚高导致 K 计数选错锚点。
             val last = messages.lastOrNull()
             val rowHeight = rect.height().coerceAtLeast(1)
+            val lastRowHeight = last?.rect?.height()?.coerceAtLeast(1) ?: 1
             val gap = if (last != null) rect.top - last.rect.bottom else Int.MAX_VALUE
+            // 阈值取 max(当前行高, 上一条行高, 80px): 80px 兜底覆盖名字与气泡间距
+            val mergeThreshold = maxOf(rowHeight, lastRowHeight, 80)
+            // 水平重叠检查: 同一气泡内多行文字左右边界基本对齐
+            val horizontalOverlap = if (last != null)
+                minOf(rect.right, last.rect.right) - maxOf(rect.left, last.rect.left) else 0
+            val overlapRatio = if (last != null)
+                horizontalOverlap.toFloat() / minOf(rect.width(), last.rect.width()).coerceAtLeast(1) else 0f
             val canMerge = !blockMergeAcrossTime &&
                 last != null &&
                 last.sender == sender &&
-                gap <= rowHeight
+                gap <= mergeThreshold &&
+                overlapRatio > 0.3f
             blockMergeAcrossTime = false
 
             if (canMerge && last != null) {
