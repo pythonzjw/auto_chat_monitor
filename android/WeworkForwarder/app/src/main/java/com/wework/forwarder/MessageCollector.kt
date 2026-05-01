@@ -82,15 +82,14 @@ object MessageCollector {
         if (k < 1) return null
 
         // v2.3.0: 数据源从 OCR 切回 ListView 子节点
-        // OCR (splitToMessages) 的 TextBlock 聚合无论怎么调阈值都有边界 case,
-        // ListView 每个 child 天然对应一行,不存在拆分/聚合问题。
+        // ListView 每个 child 天然对应一行,不存在 OCR TextBlock 拆分/聚合问题。
         val root = service.getRootNode() ?: run {
             log("[采集] 控件树为空,无法取倒数第 $k 条")
             return null
         }
 
         val screenWidth = metrics.widthPixels
-        val (messages, nodes) = collectByStructureWithNodes(root, screenWidth)
+        var (messages, nodes) = collectByStructureWithNodes(root, screenWidth)
         log("[采集] ListView 解析: ${messages.size} 条消息 (k=$k)")
 
         if (messages.isEmpty()) {
@@ -98,12 +97,55 @@ object MessageCollector {
             return null
         }
 
-        val actualK = minOf(k, messages.size)
-        val targetIdx = messages.size - actualK
+        // 屏幕可见消息足够: 直接取倒数第 k 条
+        if (messages.size >= k) {
+            val targetIdx = messages.size - k
+            log("[采集] 倒数第 $k 条 = 第 ${targetIdx + 1}/${messages.size}: ${messages[targetIdx].sender}: ${messages[targetIdx].content.take(30)}")
+            return FirstNewMessageInfo(messages[targetIdx], node = nodes[targetIdx], rect = null)
+        }
+
+        // 屏幕可见消息不够(k > 屏幕行数): 上滑加载更多历史消息
+        // 追踪"已滑出屏幕下方"的消息数,用来定位目标在当前屏幕中的位置
+        fun keyOf(m: Storage.Message) = "${m.sender}|${m.content}|${m.time}"
+        var prevKeys = messages.map { keyOf(it) }.toSet()
+        val allSeenKeys = prevKeys.toMutableSet()
+        var messagesBelowScreen = 0
+        var totalSeen = messages.size
+        var swipeUps = 0
+        var consecutiveNoNew = 0
+
+        while (totalSeen < k && swipeUps < 15 && consecutiveNoNew < 3) {
+            if (!CollectorService.isRunning) return null
+            GestureHelper.swipeUp(service, metrics)
+            GestureHelper.delay(400)
+
+            val newRoot = service.getRootNode() ?: break
+            val result = collectByStructureWithNodes(newRoot, screenWidth)
+            messages = result.first
+            nodes = result.second
+            swipeUps++
+
+            val currentKeys = messages.map { keyOf(it) }.toSet()
+            // 上一屏有但当前屏没有的 = 滑到屏幕下方去了
+            messagesBelowScreen += prevKeys.count { it !in currentKeys }
+            var newCount = 0
+            for (key in currentKeys) {
+                if (allSeenKeys.add(key)) newCount++
+            }
+            totalSeen += newCount
+            consecutiveNoNew = if (newCount > 0) 0 else consecutiveNoNew + 1
+            prevKeys = currentKeys
+
+            log("[采集] swipeUp 第 $swipeUps 轮, 屏幕 ${messages.size} 条, 新增 $newCount 条, 累计 $totalSeen 条, 屏下 $messagesBelowScreen 条")
+        }
+
+        // 目标在当前屏幕中的位置: 全局倒数第 k 条 = 当前屏幕倒数第 (k - messagesBelowScreen) 条
+        val kInScreen = (k - messagesBelowScreen).coerceIn(1, messages.size)
+        val targetIdx = messages.size - kInScreen
         val targetMsg = messages[targetIdx]
         val targetNode = nodes[targetIdx]
 
-        log("[采集] 倒数第 $actualK 条 = 第 ${targetIdx + 1}/${messages.size}: ${targetMsg.sender}: ${targetMsg.content.take(30)}")
+        log("[采集] 倒数第 $k 条 (屏下${messagesBelowScreen}条, 屏内倒数第${kInScreen}条) = 第 ${targetIdx + 1}/${messages.size}: ${targetMsg.sender}: ${targetMsg.content.take(30)}")
         return FirstNewMessageInfo(targetMsg, node = targetNode, rect = null)
     }
 
