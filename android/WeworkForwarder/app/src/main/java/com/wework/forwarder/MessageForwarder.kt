@@ -207,6 +207,20 @@ object MessageForwarder {
      * 按钮被滑出屏幕时（滑过头），swipeUp 1 次恢复。
      */
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
+        // 快速尝试: 消息全在屏幕内时,底部按钮已可见,不需要滑动
+        GestureHelper.delay(300)
+        val quickBtn = findSelectToHereDown(service, strict = false)
+        if (quickBtn != null) {
+            val qr = Rect()
+            quickBtn.getBoundsInScreen(qr)
+            if (qr.centerY() > metrics.widthPixels) { // 底部按钮应在屏幕下半区
+                log("[转发] 底部按钮已可见,直接点击 y=${qr.centerY()}")
+                service.clickAt(qr.centerX().toFloat(), qr.centerY().toFloat())
+                GestureHelper.delay(1000)
+                return true
+            }
+        }
+
         var lastBottom = -1
         var lastChildCount = -1
         var stableCount = 0
@@ -494,10 +508,11 @@ object MessageForwarder {
         val metrics = service.resources.displayMetrics
         val halfWidth = metrics.widthPixels / 2
 
-        val screenHeight = metrics.heightPixels
-        val titleTop = (screenHeight * 0.033).toInt()      // 2392 → 79
-        val titleBottom = (screenHeight * 0.109).toInt()   // 2392 → 261
-        val maxBtnSize = (metrics.widthPixels * 0.185).toInt() // 1080 → 200
+        // 用 screenWidth 算标题栏范围(heightPixels 可能不含导航栏,但 bounds 包含状态栏)
+        val sw = metrics.widthPixels
+        val titleTop = (sw * 0.074).toInt()       // 1080 → 80
+        val titleBottom = (sw * 0.241).toInt()    // 1080 → 260
+        val maxBtnSize = (sw * 0.185).toInt()     // 1080 → 200
         val clickables = NodeFinder.findAll(root) { node ->
             if (!node.isClickable) return@findAll false
             val rect = Rect()
