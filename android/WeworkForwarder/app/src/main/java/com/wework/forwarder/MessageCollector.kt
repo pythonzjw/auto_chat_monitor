@@ -249,6 +249,15 @@ object MessageCollector {
                 is ParseResult.Msg -> {
                     // 同一 child 可能 [分割线 + 时间 + 第一条新消息] 共存(见 dump_手动 child #2),
                     // minTop 过滤确保长按落在分割线下方而不是分割线本身
+                    val listRect = Rect()
+                    chatList.getBoundsInScreen(listRect)
+                    val visibleTop = maxOf(rect.top, listRect.top)
+                    val visibleBottom = minOf(rect.bottom, listRect.bottom)
+                    val visibleHeight = maxOf(0, visibleBottom - visibleTop)
+                    if (rect.height() > 0 && visibleHeight * 2 < rect.height()) {
+                        log("[分割线] 第一条消息被裁剪过半 (可见${visibleHeight}/${rect.height()}), 跳过等 swipeDown")
+                        return null
+                    }
                     val bubbleRect = pickBubbleRectBelow(child, minTop)
                     return FirstNewMessageInfo(parsed.message, node = child, rect = bubbleRect)
                 }
