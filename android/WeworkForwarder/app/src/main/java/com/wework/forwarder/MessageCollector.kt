@@ -251,11 +251,9 @@ object MessageCollector {
                     // minTop 过滤确保长按落在分割线下方而不是分割线本身
                     val listRect = Rect()
                     chatList.getBoundsInScreen(listRect)
-                    val visibleTop = maxOf(rect.top, listRect.top)
-                    val visibleBottom = minOf(rect.bottom, listRect.bottom)
-                    val visibleHeight = maxOf(0, visibleBottom - visibleTop)
-                    if (rect.height() > 0 && visibleHeight * 2 < rect.height()) {
-                        log("[分割线] 第一条消息被裁剪过半 (可见${visibleHeight}/${rect.height()}), 跳过等 swipeDown")
+                    val clippedBottom = maxOf(0, rect.bottom - listRect.bottom)
+                    if (rect.height() > 0 && clippedBottom > 50) {
+                        log("[分割线] 第一条消息底部被裁剪 ${clippedBottom}px (总高${rect.height()}), 跳过等 swipeDown")
                         return null
                     }
                     val bubbleRect = pickBubbleRectBelow(child, minTop)
