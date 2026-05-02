@@ -204,29 +204,30 @@ object MessageForwarder {
      * 按钮被滑出屏幕时（滑过头），swipeUp 1 次恢复。
      */
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
-        var lastContent = ""
+        var lastBottom = -1
         var lastChildCount = -1
         var stableCount = 0
 
         for (i in 0 until 20) {
             if (stopped()) return false
 
-            // 每轮强制滑动一次（杜绝零滑动直接判到底）
             GestureHelper.swipeDown(service, metrics)
 
-            // 读当前状态
             val root = service.getRootNode()
             val chatList = root?.let {
                 NodeFinder.findByClassName(it, "android.widget.ListView")
                     ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
             }
             val curChildCount = chatList?.childCount ?: 0
-            // v2.2.0: 多选模式下 ListView 每行加 checkbox, parseListItem 全 Skip → curContent="" 永不稳定。
-            // OCR 读屏幕像素不依赖 NodeInfo 结构, checkbox 不影响识别。
-            val curContent = OcrCollector.collectFromScreen(service)
-                ?.lastOrNull()?.content ?: ""
 
-            // 按钮消失保护：滑过头会让按钮被滑出屏幕，需要 swipeUp 恢复
+            // v2.4.0: 用最后一个 child 的 bounds.bottom 判断到底,不再依赖 OCR
+            val curBottom = if (chatList != null && curChildCount > 0) {
+                val lastChild = chatList.getChild(curChildCount - 1)
+                val r = Rect()
+                lastChild?.getBoundsInScreen(r)
+                r.bottom
+            } else 0
+
             var btn = findSelectToHereDown(service)
             if (btn == null) {
                 log("[转发] 按钮不可见，swipeUp 1次恢复")
@@ -234,15 +235,12 @@ object MessageForwarder {
                 btn = findSelectToHereDown(service)
             }
 
-            // 到底判定：内容 + childCount 都不变才算稳定
-            val stable = curContent.isNotEmpty()
-                    && curContent == lastContent
+            val stable = curBottom > 0
+                    && curBottom == lastBottom
                     && curChildCount == lastChildCount
             if (stable) {
                 stableCount++
-                log("[转发] 列表稳定第 ${stableCount} 轮 (last='${curContent.take(20)}', count=$curChildCount)")
-                // 连续 2 轮稳定（首次stable→stableCount=1，第二次→2 触发）
-                // v1.9.4: 已稳定 = 已到底,放宽单按钮上半屏限制(strict=false 兜底)
+                log("[转发] 列表稳定第 ${stableCount} 轮 (bottom=$curBottom, count=$curChildCount)")
                 if (stableCount >= 2) {
                     val finalBtn = btn ?: findSelectToHereDown(service, strict = false)
                     if (finalBtn != null) {
@@ -257,7 +255,7 @@ object MessageForwarder {
             } else {
                 stableCount = 0
             }
-            lastContent = curContent
+            lastBottom = curBottom
             lastChildCount = curChildCount
         }
 

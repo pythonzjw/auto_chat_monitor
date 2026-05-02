@@ -81,8 +81,7 @@ object MessageCollector {
     ): FirstNewMessageInfo? {
         if (k < 1) return null
 
-        // v2.3.0: 数据源从 OCR 切回 ListView 子节点
-        // ListView 每个 child 天然对应一行,不存在 OCR TextBlock 拆分/聚合问题。
+        // v2.3.0: 数据源用 ListView 子节点,每个 child 天然对应一行
         val root = service.getRootNode() ?: run {
             log("[采集] 控件树为空,无法取倒数第 $k 条")
             return null
@@ -159,7 +158,7 @@ object MessageCollector {
     /**
      * v2.2.0: 用 "以下为新消息" 分割线定位第一条未读消息
      *
-     * 替代旧的"OCR + K 计数"主路径(去重 key 用 rect.top 在 swipeUp 后失效, 累计虚高)。
+     * 替代旧的"K 计数"主路径。
      * 进入聊天时 WeWork 自动对齐到分割线, 所以调用前不要 scrollToBottom。
      *
      * v2.3.4: 进群时企微自动对齐到分割线,第 0 轮就该命中。
@@ -198,7 +197,7 @@ object MessageCollector {
                 return@repeat
             }
             if (iter == maxScrolls) {
-                log("[分割线] $maxScrolls 次 swipeUp 仍未命中, 走 OCR 兜底")
+                log("[分割线] $maxScrolls 次 swipeUp 仍未命中, 走 ListView 兜底")
                 return null
             }
             GestureHelper.swipeUp(service, metrics)  // 查看旧消息(分割线在屏幕上方)
