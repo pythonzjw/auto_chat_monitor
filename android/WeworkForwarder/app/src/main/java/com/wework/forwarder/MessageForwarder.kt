@@ -51,8 +51,8 @@ object MessageForwarder {
         if (anchor != null) {
             log("[转发] 屏幕消息 >= $k, 直接定位锚点")
         } else {
-            log("[转发] 屏幕消息 < $k, 试探分割线...")
-            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
+            log("[转发] 屏幕消息 < $k, 上滑找分割线...")
+            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 10)
             if (anchor == null) {
                 log("[转发] 分割线也未命中, 兜底 scrollToBottom + swipeUp 累积 (K=$k)...")
                 scrollToBottom(service, metrics)
@@ -94,7 +94,7 @@ object MessageForwarder {
                 anchor
             } else {
                 MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
-                    ?: MessageCollector.findFirstNewMessageByDivider(service, metrics)
+                    ?: MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 10)
                     ?: run {
                         log("[转发] 第${batchIdx + 1}批: 兜底 scrollToBottom + swipeUp")
                         scrollToBottom(service, metrics)
