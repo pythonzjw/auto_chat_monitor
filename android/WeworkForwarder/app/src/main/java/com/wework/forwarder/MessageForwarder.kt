@@ -52,14 +52,7 @@ object MessageForwarder {
             log("[转发] 屏幕消息 >= $k, 直接定位锚点")
         } else {
             log("[转发] 屏幕消息 < $k, 上滑找分割线...")
-            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 10)
-            if (anchor == null) {
-                log("[转发] 分割线也未命中, 兜底 scrollToBottom + swipeUp 累积 (K=$k)...")
-                scrollToBottom(service, metrics)
-                if (stopped()) return false
-                GestureHelper.delay(500)
-                anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
-            }
+            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 30)
         }
         if (anchor == null) {
             log("[转发] ✗ 所有路径均失败")
@@ -94,13 +87,7 @@ object MessageForwarder {
                 anchor
             } else {
                 MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
-                    ?: MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 10)
-                    ?: run {
-                        log("[转发] 第${batchIdx + 1}批: 兜底 scrollToBottom + swipeUp")
-                        scrollToBottom(service, metrics)
-                        GestureHelper.delay(500)
-                        MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
-                    }
+                    ?: MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 30)
             }
             if (pressInfo == null) {
                 log("[转发] ✗ 取锚点失败,无法长按")
