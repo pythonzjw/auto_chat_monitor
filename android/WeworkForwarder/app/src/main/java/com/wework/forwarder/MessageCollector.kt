@@ -235,15 +235,15 @@ object MessageCollector {
         minTop: Int,
         service: WeWorkAccessibilityService,
     ): FirstNewMessageInfo? {
-        val halfWidth = service.resources.displayMetrics.widthPixels / 2
+        val screenWidth = service.resources.displayMetrics.widthPixels
+        val halfWidth = screenWidth / 2
         var currentTime = ""
         for (i in 0 until chatList.childCount) {
             val child = chatList.getChild(i) ?: continue
             val rect = Rect()
             child.getBoundsInScreen(rect)
-            // child 完全在分割线之上 → 已读, 跳过
             if (rect.bottom <= minTop) continue
-            when (val parsed = parseListItem(child, halfWidth, currentTime)) {
+            when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
                 is ParseResult.TimeLabel -> currentTime = parsed.time
                 is ParseResult.Skip -> continue
                 is ParseResult.Msg -> {
