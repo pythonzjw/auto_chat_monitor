@@ -379,13 +379,29 @@ object MessageCollector {
             return Pair(messages, nodes)
         }
 
+        val listRect = Rect()
+        chatList.getBoundsInScreen(listRect)
+
         var currentTime = ""
         val childCount = chatList.childCount
         log("[策略1] 找到 ListView，childCount=$childCount")
         var skipCount = 0
         var timeCount = 0
+        var clipCount = 0
         for (i in 0 until childCount) {
             val child = chatList.getChild(i) ?: continue
+
+            // 过滤大部分在 ListView 可视区域外的子节点(上滑后顶部/底部露出的半截卡片)
+            val childRect = Rect()
+            child.getBoundsInScreen(childRect)
+            val visibleTop = maxOf(childRect.top, listRect.top)
+            val visibleBottom = minOf(childRect.bottom, listRect.bottom)
+            val visibleHeight = maxOf(0, visibleBottom - visibleTop)
+            if (childRect.height() > 0 && visibleHeight * 2 < childRect.height()) {
+                clipCount++
+                continue
+            }
+
             val result = parseListItem(child, halfWidth, currentTime)
             when (result) {
                 is ParseResult.TimeLabel -> { currentTime = result.time; timeCount++ }
@@ -393,7 +409,7 @@ object MessageCollector {
                 is ParseResult.Skip -> skipCount++
             }
         }
-        log("[策略1] 解析结果: ${messages.size}条消息, ${timeCount}个时间, ${skipCount}个跳过")
+        log("[策略1] 解析结果: ${messages.size}条消息, ${timeCount}个时间, ${skipCount}个跳过, ${clipCount}个截断跳过")
         return Pair(messages, nodes)
     }
 
