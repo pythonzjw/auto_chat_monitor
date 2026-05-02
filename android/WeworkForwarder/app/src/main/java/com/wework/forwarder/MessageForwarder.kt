@@ -40,27 +40,29 @@ object MessageForwarder {
     ): Boolean {
         log("[转发] 开始执行转发流程,目标:转最后 $unreadCount 条...")
 
-        // v2.2.0: 主路径用 "以下为新消息" 分割线定位锚点(进入聊天 WeWork 自动对齐到分割线)
-        // 不再先 scrollToBottom 把分割线滚出屏幕
         val k = minOf(unreadCount, Config.maxForwardCount)
         if (k < unreadCount) {
             log("[转发] 徽章 $unreadCount 超过上限 ${Config.maxForwardCount},截断为 $k")
         }
 
-        // v2.2.2: 分割线渲染条件是"未读消息总高 > 屏幕高",不是条数。
-        // 直接试探分割线: 存在企微自动对齐到屏幕,第 0 轮就能找到;
-        // 不存在(消息没超屏)就立即走 ListView K 计数兜底,不要空跑 swipeUp。
-        log("[转发] 步骤1: 试探 '以下为新消息' 分割线...")
-        var anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
-        if (anchor == null) {
-            log("[转发] 分割线不存在或找不到, 走 ListView K 计数 (K=$k)...")
-            scrollToBottom(service, metrics)
-            if (stopped()) return false
-            GestureHelper.delay(500)
-            anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
+        // v2.4.0: 先数当前屏幕消息,够则直接选;不够走分割线(消息超屏企微必渲染分割线)
+        log("[转发] 步骤1: 数当前屏幕消息...")
+        var anchor = MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
+        if (anchor != null) {
+            log("[转发] 屏幕消息 >= $k, 直接定位锚点")
+        } else {
+            log("[转发] 屏幕消息 < $k, 试探分割线...")
+            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
+            if (anchor == null) {
+                log("[转发] 分割线也未命中, 兜底 scrollToBottom + swipeUp 累积 (K=$k)...")
+                scrollToBottom(service, metrics)
+                if (stopped()) return false
+                GestureHelper.delay(500)
+                anchor = MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
+            }
         }
         if (anchor == null) {
-            log("[转发] ✗ 分割线 + ListView K 计数双双失败")
+            log("[转发] ✗ 所有路径均失败")
             dumpOnFailure(service, "取锚点失败")
             return false
         }
@@ -91,9 +93,10 @@ object MessageForwarder {
             val pressInfo: MessageCollector.FirstNewMessageInfo? = if (batchIdx == 0) {
                 anchor
             } else {
-                MessageCollector.findFirstNewMessageByDivider(service, metrics)
+                MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
+                    ?: MessageCollector.findFirstNewMessageByDivider(service, metrics)
                     ?: run {
-                        log("[转发] 第${batchIdx + 1}批: 分割线不存在/找不到, 走 ListView K 计数")
+                        log("[转发] 第${batchIdx + 1}批: 兜底 scrollToBottom + swipeUp")
                         scrollToBottom(service, metrics)
                         GestureHelper.delay(500)
                         MessageCollector.getNthFromBottomMessage(service, metrics, k, unreadCount)
@@ -491,15 +494,18 @@ object MessageForwarder {
         val metrics = service.resources.displayMetrics
         val halfWidth = metrics.widthPixels / 2
 
-        // 查找标题栏右侧按钮（y=[80,260]，右半边，排除大容器）
+        val screenHeight = metrics.heightPixels
+        val titleTop = (screenHeight * 0.033).toInt()      // 2392 → 79
+        val titleBottom = (screenHeight * 0.109).toInt()   // 2392 → 261
+        val maxBtnSize = (metrics.widthPixels * 0.185).toInt() // 1080 → 200
         val clickables = NodeFinder.findAll(root) { node ->
             if (!node.isClickable) return@findAll false
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            rect.top >= 80 && rect.bottom <= 260
+            rect.top >= titleTop && rect.bottom <= titleBottom
                     && rect.left > halfWidth
-                    && rect.width() < 200
-                    && rect.height() < 200
+                    && rect.width() < maxBtnSize
+                    && rect.height() < maxBtnSize
         }
 
         if (clickables.isEmpty()) {

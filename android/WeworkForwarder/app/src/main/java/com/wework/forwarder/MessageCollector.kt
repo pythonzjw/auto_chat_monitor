@@ -64,6 +64,26 @@ object MessageCollector {
     }
 
     /**
+     * v2.4.0: 当前屏幕消息 >= k 时直接返回倒数第 k 条,否则返回 null。
+     * 不 scrollToBottom,不 swipeUp,只看进群后企微自然展示的内容。
+     */
+    fun getNthFromBottomIfEnough(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        k: Int
+    ): FirstNewMessageInfo? {
+        if (k < 1) return null
+        val root = service.getRootNode() ?: return null
+        val screenWidth = metrics.widthPixels
+        val (messages, nodes) = collectByStructureWithNodes(root, screenWidth)
+        log("[采集] 屏幕快检: ${messages.size} 条消息 (需要 k=$k)")
+        if (messages.size < k) return null
+        val targetIdx = messages.size - k
+        log("[采集] 屏幕足够, 倒数第 $k 条 = 第 ${targetIdx + 1}/${messages.size}: ${messages[targetIdx].sender}: ${messages[targetIdx].content.take(30)}")
+        return FirstNewMessageInfo(messages[targetIdx], node = nodes[targetIdx], rect = null)
+    }
+
+    /**
      * v2.0: 取屏幕底部往上数第 K 条消息(及其 ListView 节点,供长按)
      *
      * 调用方已 scrollToBottom,屏幕末端就是最新消息。
@@ -408,7 +428,7 @@ object MessageCollector {
                 continue
             }
 
-            val result = parseListItem(child, halfWidth, currentTime)
+            val result = parseListItem(child, halfWidth, screenWidth, currentTime)
             when (result) {
                 is ParseResult.TimeLabel -> { currentTime = result.time; timeCount++ }
                 is ParseResult.Msg -> { messages.add(result.message); nodes.add(child) }
@@ -442,26 +462,25 @@ object MessageCollector {
      *
      * 【系统消息/时间标签】无头像，无左侧ImageView，文本居中
      */
-    private fun parseListItem(node: AccessibilityNodeInfo, halfWidth: Int, currentTime: String): ParseResult {
+    private fun parseListItem(node: AccessibilityNodeInfo, halfWidth: Int, screenWidth: Int, currentTime: String): ParseResult {
         val rect = Rect()
         node.getBoundsInScreen(rect)
 
-        // 高度太小 → 分隔线/空占位
         if (rect.height() < 30) return ParseResult.Skip
 
-        // 收集所有文本节点（含坐标）
         val allTexts = NodeFinder.getAllTexts(node)
 
-        // 我的消息的头像占位符：text=" "，尺寸合理，位于右侧
+        // 头像占位符尺寸范围(按屏幕宽度比例)
+        val avatarMin = (screenWidth * 0.018).toInt()  // 1080 → 19
+        val avatarMax = (screenWidth * 0.14).toInt()    // 1080 → 151
         val avatarPlaceholders = allTexts.filter {
             it.text.trim().isEmpty()
-                    && it.bounds.width() in 20..150
-                    && it.bounds.height() in 20..150
+                    && it.bounds.width() in avatarMin..avatarMax
+                    && it.bounds.height() in avatarMin..avatarMax
         }
         val contentTexts = allTexts.filter { it.text.trim().isNotEmpty() }
 
-        // 别人消息的头像：左侧的大 ImageView（bounds left < 200, 尺寸 80-150px）
-        val leftAvatarImage = findLeftAvatarImage(node)
+        val leftAvatarImage = findLeftAvatarImage(node, screenWidth)
 
         // 判断消息类型
         val hasMyAvatar = avatarPlaceholders.any { it.bounds.centerX() >= halfWidth }
@@ -535,17 +554,15 @@ object MessageCollector {
         return ParseResult.Skip
     }
 
-    /**
-     * 查找别人消息的头像 ImageView（左侧，尺寸 80-150px）
-     * 别人的头像特征：bounds.left < 200, 宽高在 80-150 范围
-     */
-    private fun findLeftAvatarImage(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    private fun findLeftAvatarImage(node: AccessibilityNodeInfo, screenWidth: Int): AccessibilityNodeInfo? {
+        val leftThreshold = (screenWidth * 0.19).toInt()   // 1080 → 205
+        val sizeMin = (screenWidth * 0.065).toInt()         // 1080 → 70
+        val sizeMax = (screenWidth * 0.17).toInt()           // 1080 → 183
         val images = NodeFinder.findAllByClassName(node, "android.widget.ImageView")
         for (img in images) {
             val r = Rect()
             img.getBoundsInScreen(r)
-            // 左侧头像：left < 200, 尺寸约 107x107
-            if (r.left < 200 && r.width() in 70..180 && r.height() in 70..180) {
+            if (r.left < leftThreshold && r.width() in sizeMin..sizeMax && r.height() in sizeMin..sizeMax) {
                 return img
             }
         }
