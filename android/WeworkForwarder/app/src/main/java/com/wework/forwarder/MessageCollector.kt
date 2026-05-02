@@ -105,10 +105,9 @@ object MessageCollector {
         }
 
         // 屏幕可见消息不够(k > 屏幕行数): 上滑加载更多历史消息
-        // 追踪"已滑出屏幕下方"的消息数,用来定位目标在当前屏幕中的位置
+        // 用有序列表匹配追踪滚动位移,不用 Set(同一人发相同内容会丢失)
         fun keyOf(m: Storage.Message) = "${m.sender}|${m.content}"
-        var prevKeys = messages.map { keyOf(it) }.toSet()
-        val allSeenKeys = prevKeys.toMutableSet()
+        var prevList = messages.map { keyOf(it) }
         var messagesBelowScreen = 0
         var totalSeen = messages.size
         var swipeUps = 0
@@ -125,18 +124,26 @@ object MessageCollector {
             nodes = result.second
             swipeUps++
 
-            val currentKeys = messages.map { keyOf(it) }.toSet()
-            // 上一屏有但当前屏没有的 = 滑到屏幕下方去了
-            messagesBelowScreen += prevKeys.count { it !in currentKeys }
-            var newCount = 0
-            for (key in currentKeys) {
-                if (allSeenKeys.add(key)) newCount++
+            val currList = messages.map { keyOf(it) }
+            // 有序匹配: 上滑后 prevList 的前 N 条应出现在 currList 末尾(重叠部分)
+            // prevList=[M5,M6,M7,M8] → swipeUp → currList=[M3,M4,M5,M6]
+            // overlap=2 (M5,M6), belowScreen+=2 (M7,M8), new=2 (M3,M4)
+            var overlap = 0
+            val maxOverlap = minOf(prevList.size, currList.size)
+            for (len in maxOverlap downTo 1) {
+                if (prevList.subList(0, len) == currList.subList(currList.size - len, currList.size)) {
+                    overlap = len
+                    break
+                }
             }
+            val belowThisRound = prevList.size - overlap
+            messagesBelowScreen += belowThisRound
+            val newCount = currList.size - overlap
             totalSeen += newCount
             consecutiveNoNew = if (newCount > 0) 0 else consecutiveNoNew + 1
-            prevKeys = currentKeys
+            prevList = currList
 
-            log("[采集] swipeUp 第 $swipeUps 轮, 屏幕 ${messages.size} 条, 新增 $newCount 条, 累计 $totalSeen 条, 屏下 $messagesBelowScreen 条")
+            log("[采集] swipeUp 第 $swipeUps 轮, 屏幕 ${messages.size} 条, 新增 $newCount, 累计 $totalSeen, 屏下 $messagesBelowScreen (overlap=$overlap)")
         }
 
         // 目标在当前屏幕中的位置: 全局倒数第 k 条 = 当前屏幕倒数第 (k - messagesBelowScreen) 条
