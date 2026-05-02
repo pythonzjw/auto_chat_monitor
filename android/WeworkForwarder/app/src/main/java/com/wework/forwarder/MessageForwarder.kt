@@ -48,11 +48,13 @@ object MessageForwarder {
         // v2.4.0: 先数当前屏幕消息,够则直接选;不够走分割线(消息超屏企微必渲染分割线)
         log("[转发] 步骤1: 数当前屏幕消息...")
         var anchor = MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
+        var usedDivider = false
         if (anchor != null) {
             log("[转发] 屏幕消息 >= $k, 直接定位锚点")
         } else {
             log("[转发] 屏幕消息 < $k, 上滑找分割线...")
             anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 30)
+            usedDivider = anchor != null
         }
         if (anchor == null) {
             log("[转发] ✗ 所有路径均失败")
@@ -81,13 +83,20 @@ object MessageForwarder {
 
             // 步骤4：长按锚点消息
             // 第1批: 用步骤1 拿到的 anchor
-            // 第2+批: 重新走 分割线 → ListView K 计数兜底
+            // 第2+批: 重新定位
             log("[转发] 步骤4: 长按消息...")
-            val pressInfo: MessageCollector.FirstNewMessageInfo? = if (batchIdx == 0) {
-                anchor
+            val pressInfo: MessageCollector.FirstNewMessageInfo?
+            if (batchIdx == 0) {
+                pressInfo = anchor
             } else {
-                MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
-                    ?: MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 30)
+                val screenAnchor = MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
+                if (screenAnchor != null) {
+                    pressInfo = screenAnchor
+                    usedDivider = false
+                } else {
+                    pressInfo = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 30)
+                    usedDivider = pressInfo != null
+                }
             }
             if (pressInfo == null) {
                 log("[转发] ✗ 取锚点失败,无法长按")
@@ -120,9 +129,9 @@ object MessageForwarder {
             log("[转发] ✓ 已点击'多选'")
             GestureHelper.delay(800)
 
-            // 步骤6：全选
-            log("[转发] 步骤6: 滚动全选...")
-            if (!scrollAndSelectToHere(service, metrics)) {
+            // 步骤6：全选（分割线路径必须滑到底，屏幕直选路径可快速点击）
+            log("[转发] 步骤6: 滚动全选 (needScroll=$usedDivider)...")
+            if (!scrollAndSelectToHere(service, metrics, needScroll = usedDivider)) {
                 log("[转发] ✗ 全选失败")
                 dumpOnFailure(service, "全选失败_批${batchIdx + 1}")
                 exitMultiSelect(service)
@@ -193,18 +202,20 @@ object MessageForwarder {
      * 不再用"按钮 y 位置"判断，因为按钮位置取决于多选锚点，与列表是否到底无关。
      * 按钮被滑出屏幕时（滑过头），swipeUp 1 次恢复。
      */
-    private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
-        // 快速尝试: 消息全在屏幕内时,底部按钮已可见,不需要滑动
-        GestureHelper.delay(300)
-        val quickBtn = findSelectToHereDown(service, strict = false)
-        if (quickBtn != null) {
-            val qr = Rect()
-            quickBtn.getBoundsInScreen(qr)
-            if (qr.centerY() > metrics.widthPixels) { // 底部按钮应在屏幕下半区
-                log("[转发] 底部按钮已可见,直接点击 y=${qr.centerY()}")
-                service.clickAt(qr.centerX().toFloat(), qr.centerY().toFloat())
-                GestureHelper.delay(1000)
-                return true
+    private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics, needScroll: Boolean = false): Boolean {
+        if (!needScroll) {
+            // 快速尝试: 消息全在屏幕内时,底部按钮已可见,不需要滑动
+            GestureHelper.delay(300)
+            val quickBtn = findSelectToHereDown(service, strict = false)
+            if (quickBtn != null) {
+                val qr = Rect()
+                quickBtn.getBoundsInScreen(qr)
+                if (qr.centerY() > metrics.widthPixels) {
+                    log("[转发] 底部按钮已可见,直接点击 y=${qr.centerY()}")
+                    service.clickAt(qr.centerX().toFloat(), qr.centerY().toFloat())
+                    GestureHelper.delay(1000)
+                    return true
+                }
             }
         }
 
