@@ -239,24 +239,28 @@ object MessageCollector {
         val halfWidth = screenWidth / 2
         val listRect = Rect()
         chatList.getBoundsInScreen(listRect)
+        val childCount = chatList.childCount
         var currentTime = ""
-        for (i in 0 until chatList.childCount) {
+        for (i in 0 until childCount) {
             val child = chatList.getChild(i) ?: continue
             val rect = Rect()
             child.getBoundsInScreen(rect)
             if (rect.bottom <= minTop) continue
+
+            // v2.4.9: 双信号检测被裁剪的大卡片(分割线下方第一条恰好是小程序时常见)
+            // 信号 A: Android 报告完整 bounds → child.bottom 超过 listRect.bottom 50px+
+            // 信号 B: Android 已裁剪 bounds → child.bottom 贴 listRect.bottom 但不是末尾子节点
+            // height > 100 排除小气泡误判;最后一个子节点本身就在底,排除
+            val clippedBeyond = rect.bottom - listRect.bottom
+            val atListEdge = rect.bottom >= listRect.bottom - 10 && i < childCount - 1
+            if (rect.height() > 100 && (clippedBeyond > 50 || atListEdge)) {
+                log("[分割线] 第${i + 1}/${childCount}子节点疑似被裁剪 (rect=$rect, listBottom=${listRect.bottom}, clippedBeyond=$clippedBeyond, atEdge=$atListEdge), 返回 null 触发 swipeDown")
+                return null
+            }
+
             when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
                 is ParseResult.TimeLabel -> currentTime = parsed.time
-                is ParseResult.Skip -> {
-                    // Android 无障碍框架会把超出 ListView 的子节点 bounds 裁剪到可见区域
-                    // 小程序卡片只露出边缘时，bounds 被裁剪成很小，parseListItem 解析失败返回 Skip
-                    // 检测：Skip 节点的底部贴着 ListView 底部 → 可能是被裁剪的消息
-                    if (rect.bottom >= listRect.bottom - 10) {
-                        log("[分割线] ListView 底部边缘有 Skip 节点 (bottom=${rect.bottom}, listBottom=${listRect.bottom}), 可能是被裁剪的消息, swipeDown 重试")
-                        return null
-                    }
-                    continue
-                }
+                is ParseResult.Skip -> continue
                 is ParseResult.Msg -> {
                     val bubbleRect = pickBubbleRectBelow(child, minTop)
                     return FirstNewMessageInfo(parsed.message, node = child, rect = bubbleRect)
