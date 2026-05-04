@@ -196,14 +196,24 @@ object MessageCollector {
             val root = service.getRootNode() ?: return null
             val divider = NodeFinder.findByText(root, dividerText)
                 ?: NodeFinder.findByTextContains(root, "新消息")  // 兼容 "X条新消息" 变体
-            if (divider != null) {
+            val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+                ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+            if (divider != null && chatList != null) {
                 val dRect = Rect()
                 divider.getBoundsInScreen(dRect)
-                val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
-                    ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
-                if (chatList == null) {
-                    log("[分割线] 命中分割线但找不到 ListView")
-                    return null
+                val listRect = Rect()
+                chatList.getBoundsInScreen(listRect)
+                // v2.4.11: 守卫 — 分割线节点存在但 bounds 在 ListView 顶部之上(常见于负坐标)时,
+                // 视为"还没滚到位",继续 swipeUp,不接受当前屏幕上方那条作为锚点
+                if (dRect.bottom <= listRect.top + 50) {
+                    log("[分割线] 节点存在但在可视区上方 (dRect.bottom=${dRect.bottom}, listTop=${listRect.top}), 继续 swipeUp")
+                    if (iter == maxScrolls) {
+                        log("[分割线] $maxScrolls 次 swipeUp 仍未把分割线滚进可视区, 走 ListView 兜底")
+                        return null
+                    }
+                    GestureHelper.swipeUp(service, metrics)
+                    GestureHelper.delay(400)
+                    return@repeat
                 }
                 val firstNew = findFirstBubbleBelow(chatList, dRect.bottom, service)
                 if (firstNew != null) {
@@ -215,6 +225,10 @@ object MessageCollector {
                 GestureHelper.swipeDown(service, metrics)
                 GestureHelper.delay(400)
                 return@repeat
+            }
+            if (divider != null && chatList == null) {
+                log("[分割线] 命中分割线但找不到 ListView")
+                return null
             }
             if (iter == maxScrolls) {
                 log("[分割线] $maxScrolls 次 swipeUp 仍未命中, 走 ListView 兜底")
