@@ -237,25 +237,25 @@ object MessageCollector {
     ): FirstNewMessageInfo? {
         val screenWidth = service.resources.displayMetrics.widthPixels
         val halfWidth = screenWidth / 2
+        val listRect = Rect()
+        chatList.getBoundsInScreen(listRect)
         var currentTime = ""
         for (i in 0 until chatList.childCount) {
             val child = chatList.getChild(i) ?: continue
             val rect = Rect()
             child.getBoundsInScreen(rect)
             if (rect.bottom <= minTop) continue
+            // 底部被裁剪的节点(如小程序卡片只露出边缘)需要 swipeDown 完整显示
+            // 在 parseListItem 之前检查，因为裁剪过多会导致解析失败被当成 Skip
+            val clippedBottom = maxOf(0, rect.bottom - listRect.bottom)
+            if (clippedBottom > 50 && rect.height() > 100) {
+                log("[分割线] 分割线下方节点被裁剪 ${clippedBottom}px (总高${rect.height()}), swipeDown 重试")
+                return null
+            }
             when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
                 is ParseResult.TimeLabel -> currentTime = parsed.time
                 is ParseResult.Skip -> continue
                 is ParseResult.Msg -> {
-                    // 同一 child 可能 [分割线 + 时间 + 第一条新消息] 共存(见 dump_手动 child #2),
-                    // minTop 过滤确保长按落在分割线下方而不是分割线本身
-                    val listRect = Rect()
-                    chatList.getBoundsInScreen(listRect)
-                    val clippedBottom = maxOf(0, rect.bottom - listRect.bottom)
-                    if (rect.height() > 0 && clippedBottom > 50) {
-                        log("[分割线] 第一条消息底部被裁剪 ${clippedBottom}px (总高${rect.height()}), 跳过等 swipeDown")
-                        return null
-                    }
                     val bubbleRect = pickBubbleRectBelow(child, minTop)
                     return FirstNewMessageInfo(parsed.message, node = child, rect = bubbleRect)
                 }
