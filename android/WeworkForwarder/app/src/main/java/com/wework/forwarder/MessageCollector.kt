@@ -245,16 +245,18 @@ object MessageCollector {
             val rect = Rect()
             child.getBoundsInScreen(rect)
             if (rect.bottom <= minTop) continue
-            // 底部被裁剪的节点(如小程序卡片只露出边缘)需要 swipeDown 完整显示
-            // 在 parseListItem 之前检查，因为裁剪过多会导致解析失败被当成 Skip
-            val clippedBottom = maxOf(0, rect.bottom - listRect.bottom)
-            if (clippedBottom > 50 && rect.height() > 100) {
-                log("[分割线] 分割线下方节点被裁剪 ${clippedBottom}px (总高${rect.height()}), swipeDown 重试")
-                return null
-            }
             when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
                 is ParseResult.TimeLabel -> currentTime = parsed.time
-                is ParseResult.Skip -> continue
+                is ParseResult.Skip -> {
+                    // Android 无障碍框架会把超出 ListView 的子节点 bounds 裁剪到可见区域
+                    // 小程序卡片只露出边缘时，bounds 被裁剪成很小，parseListItem 解析失败返回 Skip
+                    // 检测：Skip 节点的底部贴着 ListView 底部 → 可能是被裁剪的消息
+                    if (rect.bottom >= listRect.bottom - 10) {
+                        log("[分割线] ListView 底部边缘有 Skip 节点 (bottom=${rect.bottom}, listBottom=${listRect.bottom}), 可能是被裁剪的消息, swipeDown 重试")
+                        return null
+                    }
+                    continue
+                }
                 is ParseResult.Msg -> {
                     val bubbleRect = pickBubbleRectBelow(child, minTop)
                     return FirstNewMessageInfo(parsed.message, node = child, rect = bubbleRect)
