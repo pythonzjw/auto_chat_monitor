@@ -73,30 +73,15 @@ object MessageForwarder {
             if (stopped()) return false
             log("[转发] === 第 ${batchIdx + 1}/${batches.size} 批（${batch.size}个群）===")
 
-            // 第2批起需要回源群,不先 scrollToBottom (保留分割线自然位置)
-            if (batchIdx > 0) {
-                log("[转发] 回到源群...")
-                Navigator.enterGroup(service, metrics, Config.sourceGroup)
-                if (stopped()) return false
-                GestureHelper.delayExact(Config.enterGroupWaitSeconds * 1000L)
-            }
-
-            // 步骤4：长按锚点消息
-            // 第1批: 用步骤1 拿到的 anchor
-            // 第2+批: 重新定位
+            // v2.4.12: 第 2 批起留在原群,不再退群再进群
+            // 用文本指纹复定位锚点(分割线已被读消失,getNthFromBottom 也会因企微滚到底而失效)
             log("[转发] 步骤4: 长按消息...")
             val pressInfo: MessageCollector.FirstNewMessageInfo?
             if (batchIdx == 0) {
                 pressInfo = anchor
             } else {
-                val screenAnchor = MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
-                if (screenAnchor != null) {
-                    pressInfo = screenAnchor
-                    usedDivider = false
-                } else {
-                    pressInfo = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 30)
-                    usedDivider = pressInfo != null
-                }
+                pressInfo = MessageCollector.findAnchorByMessage(service, metrics, firstNewMsg, maxScrolls = 30)
+                usedDivider = true  // 复定位后锚点离底部远,scrollAndSelectToHere 必须走滚动版本
             }
             if (pressInfo == null) {
                 log("[转发] ✗ 取锚点失败,无法长按")
@@ -405,6 +390,15 @@ object MessageForwarder {
         log("[选群] ✓ 已切换到多选模式")
         GestureHelper.delay(800)
 
+        // v2.4.12: 进选群页后先 swipeUp 8 次回列表顶,
+        // 防止上一批选完停留在列表中段导致靠前的群名被漏
+        val metrics0 = service.resources.displayMetrics
+        repeat(8) {
+            GestureHelper.swipeUp(service, metrics0)
+            GestureHelper.delay(250)
+        }
+        GestureHelper.delay(500)
+
         // 3. 逐个查找群名并勾选
         var selectedCount = 0
         for ((idx, groupName) in groups.withIndex()) {
@@ -412,7 +406,7 @@ object MessageForwarder {
             log("[选群] (${idx + 1}/${groups.size}) 查找: $groupName")
 
             var found = false
-            for (scroll in 0..5) {
+            for (scroll in 0..14) {  // v2.4.12: 6 → 15 次,覆盖列表更深位置
                 val root = service.getRootNode() ?: continue
                 var result = NodeFinder.findByText(root, groupName)
                 if (result == null) {
@@ -421,23 +415,25 @@ object MessageForwarder {
                 }
 
                 if (result != null) {
-                    // 多选模式：点击左侧 ImageView 勾选框（x≈83），y 取群名行的中心
-                    // dump 实证：ImageView bounds=[45,392,121,482]，centerX=83
                     val rect = Rect()
                     result.getBoundsInScreen(rect)
-                    service.clickAt(83f, rect.centerY().toFloat())
-                    selectedCount++
-                    found = true
-                    log("[选群] ✓ 已勾选: $groupName (83, ${rect.centerY()})")
-                    GestureHelper.delay(500)
-                    break
+                    // v2.4.12: 排除标题栏 / 底部 sticky tab 区域,防止点到错的行
+                    if (rect.centerY() in 280..2050) {
+                        service.clickAt(83f, rect.centerY().toFloat())
+                        selectedCount++
+                        found = true
+                        log("[选群] ✓ 已勾选: $groupName (83, ${rect.centerY()})")
+                        GestureHelper.delay(500)
+                        break
+                    }
+                    log("[选群] 找到但 y=${rect.centerY()} 在标题/底栏区,继续滑")
                 }
 
                 // 没找到 → 向下滑动继续找
-                if (scroll < 5) {
+                if (scroll < 14) {
                     val metrics = service.resources.displayMetrics
                     GestureHelper.swipeDown(service, metrics)
-                    GestureHelper.delay(500)
+                    GestureHelper.delay(800)  // v2.4.12: 500 → 800,等列表惯性停
                 }
             }
 

@@ -294,6 +294,68 @@ object MessageCollector {
     }
 
     /**
+     * v2.4.12: 用消息文本指纹复定位锚点(供多批转发的第 2 批起使用)
+     *
+     * 第一批转发完后企微把会话滚到底部最新消息,且分割线已被清除。
+     * 此时按 sender+content 在 ListView 里搜索原锚点节点,
+     * 找不到就 swipeUp(往上看旧消息)继续找。
+     */
+    fun findAnchorByMessage(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        target: Storage.Message,
+        maxScrolls: Int = 30,
+    ): FirstNewMessageInfo? {
+        repeat(maxScrolls + 1) { iter ->
+            if (!CollectorService.isRunning) return null
+            val root = service.getRootNode() ?: return null
+            val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+                ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+                ?: return null
+            val info = findItemBySignature(chatList, target, service)
+            if (info != null) {
+                log("[复定位] 命中锚点: ${target.sender}: ${target.content.take(30)}")
+                return info
+            }
+            if (iter == maxScrolls) {
+                log("[复定位] $maxScrolls 次 swipeUp 仍未找到原锚点")
+                return null
+            }
+            GestureHelper.swipeUp(service, metrics)
+            GestureHelper.delay(400)
+        }
+        return null
+    }
+
+    private fun findItemBySignature(
+        chatList: AccessibilityNodeInfo,
+        target: Storage.Message,
+        service: WeWorkAccessibilityService,
+    ): FirstNewMessageInfo? {
+        val screenWidth = service.resources.displayMetrics.widthPixels
+        val halfWidth = screenWidth / 2
+        val childCount = chatList.childCount
+        var currentTime = ""
+        for (i in 0 until childCount) {
+            val child = chatList.getChild(i) ?: continue
+            when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
+                is ParseResult.TimeLabel -> currentTime = parsed.time
+                is ParseResult.Skip -> continue
+                is ParseResult.Msg -> {
+                    if (parsed.message.sender == target.sender
+                        && parsed.message.content == target.content) {
+                        val rect = Rect()
+                        child.getBoundsInScreen(rect)
+                        val bubbleRect = pickBubbleRectBelow(child, rect.top - 1)
+                        return FirstNewMessageInfo(target, node = child, rect = bubbleRect)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /**
      * 在 ListView 行内挑出气泡的长按矩形(限定 y >= minTop)
      *
      * v2.2.1: 旧"取最大面积 clickable"在小程序卡片场景失败。
