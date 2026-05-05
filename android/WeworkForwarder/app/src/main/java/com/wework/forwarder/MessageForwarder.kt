@@ -414,10 +414,10 @@ object MessageForwarder {
                     if (result != null) log("[选群] 模糊匹配到: ${result.text}")
                 }
 
+                val metrics = service.resources.displayMetrics
                 if (result != null) {
                     val rect = Rect()
                     result.getBoundsInScreen(rect)
-                    // v2.4.12: 排除标题栏 / 底部 sticky tab 区域,防止点到错的行
                     if (rect.centerY() in 280..2050) {
                         service.clickAt(83f, rect.centerY().toFloat())
                         selectedCount++
@@ -426,12 +426,28 @@ object MessageForwarder {
                         GestureHelper.delay(500)
                         break
                     }
-                    log("[选群] 找到但 y=${rect.centerY()} 在标题/底栏区,继续滑")
+                    // v2.4.13: 落在底栏 footer 后或标题栏后,反向滑动把目标拉回可点击区,
+                    // 之前的"继续 swipeDown" 会把目标越滑越远(尤其转发1 这类列表深处的项)
+                    if (rect.centerY() > 2050) {
+                        log("[选群] 找到但 y=${rect.centerY()} 在底栏区,swipeUp 反向调整")
+                        if (scroll < 14) {
+                            GestureHelper.swipeUp(service, metrics)
+                            GestureHelper.delay(800)
+                        }
+                        continue
+                    }
+                    if (rect.centerY() < 280) {
+                        log("[选群] 找到但 y=${rect.centerY()} 在标题区,swipeDown 反向调整")
+                        if (scroll < 14) {
+                            GestureHelper.swipeDown(service, metrics)
+                            GestureHelper.delay(800)
+                        }
+                        continue
+                    }
                 }
 
                 // 没找到 → 向下滑动继续找
                 if (scroll < 14) {
-                    val metrics = service.resources.displayMetrics
                     GestureHelper.swipeDown(service, metrics)
                     GestureHelper.delay(800)  // v2.4.12: 500 → 800,等列表惯性停
                 }
