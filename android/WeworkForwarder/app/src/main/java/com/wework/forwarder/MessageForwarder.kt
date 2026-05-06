@@ -408,13 +408,11 @@ object MessageForwarder {
             var found = false
             for (scroll in 0..14) {  // v2.4.12: 6 → 15 次,覆盖列表更深位置
                 val root = service.getRootNode() ?: continue
-                var result = NodeFinder.findByText(root, groupName)
-                if (result == null) {
-                    result = NodeFinder.findByTextContains(root, groupName)
-                    if (result != null) log("[选群] 模糊匹配到: ${result.text}")
-                }
-
+                // v2.4.14: 只用精确匹配; findByTextContains 会撞 "转发13/14/..." 形成
+                // false positive 死循环(v2.4.13 实测验证),且对找到正确节点没帮助
+                val result = NodeFinder.findByText(root, groupName)
                 val metrics = service.resources.displayMetrics
+
                 if (result != null) {
                     val rect = Rect()
                     result.getBoundsInScreen(rect)
@@ -426,24 +424,20 @@ object MessageForwarder {
                         GestureHelper.delay(500)
                         break
                     }
-                    // v2.4.13: 落在底栏 footer 后或标题栏后,反向滑动把目标拉回可点击区,
-                    // 之前的"继续 swipeDown" 会把目标越滑越远(尤其转发1 这类列表深处的项)
-                    if (rect.centerY() > 2050) {
-                        log("[选群] 找到但 y=${rect.centerY()} 在底栏区,swipeUp 反向调整")
-                        if (scroll < 14) {
-                            GestureHelper.swipeUp(service, metrics)
-                            GestureHelper.delay(800)
-                        }
-                        continue
+                    // v2.4.14: 区间外不再反向调整(v2.4.13 死循环教训),
+                    // 打完整 bounds 帮判断"真节点边缘 vs cache 过期 bounds"
+                    log("[选群] 找到但 bounds=[${rect.left},${rect.top},${rect.right},${rect.bottom}] 区间外,继续滑")
+                } else {
+                    // v2.4.14: 精确未命中时 dump 屏内所有 "转发X" 节点(含完整 bounds),
+                    // 帮诊断: 转发1 是真不在屏内 / 在屏内但 text 不同 / 在屏内但 bounds 异常
+                    val transfers = NodeFinder.findAll(root) {
+                        it.text?.toString()?.startsWith("转发") == true
+                    }.map {
+                        val r = Rect()
+                        it.getBoundsInScreen(r)
+                        "${it.text}@[${r.left},${r.top},${r.right},${r.bottom}]"
                     }
-                    if (rect.centerY() < 280) {
-                        log("[选群] 找到但 y=${rect.centerY()} 在标题区,swipeDown 反向调整")
-                        if (scroll < 14) {
-                            GestureHelper.swipeDown(service, metrics)
-                            GestureHelper.delay(800)
-                        }
-                        continue
-                    }
+                    log("[选群] scroll=$scroll 未命中 $groupName,屏内转发X(${transfers.size}): ${transfers.take(12).joinToString(" | ")}")
                 }
 
                 // 没找到 → 向下滑动继续找
