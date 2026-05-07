@@ -370,6 +370,36 @@ object MessageForwarder {
      *   4. 点右下角蓝色"确定"按钮
      */
     private fun selectTargetGroups(service: WeWorkAccessibilityService, groups: List<String>): Boolean {
+        fun readSelectedCount(root: AccessibilityNodeInfo?): Int? {
+            val btn = NodeFinder.findByTextRegex(root, Regex("确定\\s*\\(\\d+\\)")) ?: return null
+            val text = btn.text?.toString() ?: return null
+            return Regex("\\d+").find(text)?.value?.toIntOrNull()
+        }
+
+        fun clickAndVerify(
+            groupName: String,
+            centerY: Int,
+            beforeCount: Int?
+        ): Boolean {
+            repeat(2) { attempt ->
+                service.clickAt(83f, centerY.toFloat())
+                GestureHelper.delay(500)
+                val afterCount = readSelectedCount(service.getRootNode())
+                if (beforeCount != null && afterCount != null) {
+                    if (afterCount >= beforeCount + 1) {
+                        log("[选群] ✓ 已勾选: $groupName (83, $centerY) 计数 $beforeCount->$afterCount")
+                        return true
+                    }
+                    log("[选群] 点击后计数未增长: $groupName ($beforeCount->$afterCount), attempt=${attempt + 1}")
+                    return@repeat
+                }
+                // 兼容极少数场景：确定(N) 文本临时不可见，按点击成功处理，避免误阻断
+                log("[选群] ✓ 已勾选: $groupName (83, $centerY) 计数不可读")
+                return true
+            }
+            return false
+        }
+
         // 1. 等待选群页面加载
         val pageReady = NodeFinder.waitForNode(service, 3000) { root ->
             NodeFinder.findByText(root, "最近聊天")
@@ -416,17 +446,32 @@ object MessageForwarder {
                 if (result != null) {
                     val rect = Rect()
                     result.getBoundsInScreen(rect)
-                    if (rect.centerY() in 280..2050) {
-                        service.clickAt(83f, rect.centerY().toFloat())
-                        selectedCount++
-                        found = true
-                        log("[选群] ✓ 已勾选: $groupName (83, ${rect.centerY()})")
-                        GestureHelper.delay(500)
-                        break
+                    val rootNow = service.getRootNode()
+                    val confirmBtn = NodeFinder.findByTextRegex(rootNow, Regex("确定\\s*\\(\\d+\\)"))
+                        ?: NodeFinder.findByText(rootNow, "确定")
+                    val confirmTop = Rect().let { r ->
+                        confirmBtn?.getBoundsInScreen(r)
+                        if (confirmBtn != null) r.top else metrics.heightPixels
                     }
-                    // v2.4.14: 区间外不再反向调整(v2.4.13 死循环教训),
-                    // 打完整 bounds 帮判断"真节点边缘 vs cache 过期 bounds"
-                    log("[选群] 找到但 bounds=[${rect.left},${rect.top},${rect.right},${rect.bottom}] 区间外,继续滑")
+                    // 动态安全区：避开标题栏与底部确认区，兼容不同分辨率/状态栏高度
+                    val topSafe = (metrics.heightPixels * 0.10f).toInt()
+                    val bottomSafe = minOf(
+                        confirmTop - 12,
+                        (metrics.heightPixels * 0.96f).toInt()
+                    )
+
+                    if (rect.centerY() in topSafe..bottomSafe) {
+                        val beforeCount = readSelectedCount(rootNow)
+                        if (clickAndVerify(groupName, rect.centerY(), beforeCount)) {
+                            selectedCount++
+                            found = true
+                            break
+                        }
+                        log("[选群] 勾选未生效,继续滑动重找: $groupName")
+                    } else {
+                        // 区间外仅跳过，不做反向滑动，避免死循环
+                        log("[选群] 找到但 bounds=[${rect.left},${rect.top},${rect.right},${rect.bottom}] 不在动态安全区[$topSafe,$bottomSafe],继续滑")
+                    }
                 } else {
                     // v2.4.14: 精确未命中时 dump 屏内所有 "转发X" 节点(含完整 bounds),
                     // 帮诊断: 转发1 是真不在屏内 / 在屏内但 text 不同 / 在屏内但 bounds 异常
