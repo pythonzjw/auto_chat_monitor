@@ -19,6 +19,11 @@ import android.view.accessibility.AccessibilityNodeInfo
 object MessageForwarder {
     private const val TAG = "Forwarder"
 
+    private enum class EdgeZone {
+        TOP,
+        BOTTOM
+    }
+
     private fun log(msg: String) {
         Log.i(TAG, msg)
         Config.uiLog?.invoke(msg)
@@ -380,11 +385,6 @@ object MessageForwarder {
             val name: String,
             val rect: Rect,
         )
-
-        enum class EdgeZone {
-            TOP,
-            BOTTOM
-        }
 
         data class EdgeGroup(
             val name: String,
