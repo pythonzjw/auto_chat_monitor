@@ -366,10 +366,15 @@ object MessageForwarder {
      * 流程：
      *   1. 等待页面加载
      *   2. 点右上角对勾 → 切换多选模式
-     *   3. 逐个查找群名 → 坐标点击勾选
+     *   3. 从顶部逐屏扫描，当前屏命中的目标群立即勾选
      *   4. 点右下角蓝色"确定"按钮
      */
     private fun selectTargetGroups(service: WeWorkAccessibilityService, groups: List<String>): Boolean {
+        data class VisibleGroup(
+            val name: String,
+            val rect: Rect,
+        )
+
         fun readSelectedCount(root: AccessibilityNodeInfo?): Int? {
             val btn = NodeFinder.findByTextRegex(root, Regex("确定\\s*\\(\\d+\\)")) ?: return null
             val text = btn.text?.toString() ?: return null
@@ -398,6 +403,53 @@ object MessageForwarder {
                 return true
             }
             return false
+        }
+
+        fun computeSafeZone(root: AccessibilityNodeInfo?, metrics: DisplayMetrics): Pair<Int, Int> {
+            val confirmBtn = NodeFinder.findByTextRegex(root, Regex("确定\\s*\\(\\d+\\)"))
+                ?: NodeFinder.findByText(root, "确定")
+            val confirmTop = Rect().let { rect ->
+                confirmBtn?.getBoundsInScreen(rect)
+                if (confirmBtn != null) rect.top else metrics.heightPixels
+            }
+            val topSafe = (metrics.heightPixels * 0.10f).toInt()
+            val bottomSafe = minOf(
+                confirmTop - 12,
+                (metrics.heightPixels * 0.96f).toInt()
+            )
+            return topSafe to bottomSafe
+        }
+
+        fun collectVisibleTargets(
+            root: AccessibilityNodeInfo,
+            pending: Set<String>,
+            topSafe: Int,
+            bottomSafe: Int
+        ): List<VisibleGroup> {
+            if (pending.isEmpty()) return emptyList()
+            val chosen = linkedMapOf<String, VisibleGroup>()
+            for (node in NodeFinder.findAll(root) {
+                val text = it.text?.toString()?.trim() ?: return@findAll false
+                text in pending
+            }) {
+                val text = node.text?.toString()?.trim() ?: continue
+                if (text in chosen) continue
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                if (rect.centerY() !in topSafe..bottomSafe) continue
+                chosen[text] = VisibleGroup(text, rect)
+            }
+            return chosen.values.sortedWith(compareBy({ it.rect.centerY() }, { it.rect.left }))
+        }
+
+        fun buildPageSignature(root: AccessibilityNodeInfo, topSafe: Int, bottomSafe: Int): String {
+            return NodeFinder.getAllTexts(root)
+                .filter {
+                    val text = it.text.trim()
+                    text.isNotEmpty() && it.bounds.centerY() in topSafe..bottomSafe
+                }
+                .take(20)
+                .joinToString("|") { "${it.text.trim()}@${it.bounds.top}" }
         }
 
         // 1. 等待选群页面加载
@@ -429,82 +481,77 @@ object MessageForwarder {
         }
         GestureHelper.delay(500)
 
-        // 3. 逐个查找群名并勾选
+        // 3. 目标群名去重后，从顶部逐屏扫描；当前屏命中即勾选，不依赖输入顺序
+        val pending = linkedSetOf<String>()
+        val duplicates = mutableListOf<String>()
+        for (rawName in groups) {
+            val groupName = rawName.trim()
+            if (groupName.isEmpty()) continue
+            if (!pending.add(groupName)) duplicates.add(groupName)
+        }
+        if (duplicates.isNotEmpty()) {
+            log("[选群] 输入存在重复群名，已按首次出现去重: ${duplicates.distinct().joinToString(", ")}")
+        }
+
         var selectedCount = 0
-        for ((idx, groupName) in groups.withIndex()) {
+        var lastPageSignature: String? = null
+        for (scroll in 0..20) {
             if (stopped()) return selectedCount > 0
-            log("[选群] (${idx + 1}/${groups.size}) 查找: $groupName")
+            if (pending.isEmpty()) break
 
-            var found = false
-            for (scroll in 0..14) {  // v2.4.12: 6 → 15 次,覆盖列表更深位置
-                val root = service.getRootNode() ?: continue
-                // v2.4.14: 只用精确匹配; findByTextContains 会撞 "转发13/14/..." 形成
-                // false positive 死循环(v2.4.13 实测验证),且对找到正确节点没帮助
-                val result = NodeFinder.findByText(root, groupName)
-                val metrics = service.resources.displayMetrics
+            val root = service.getRootNode() ?: continue
+            val metrics = service.resources.displayMetrics
+            val (topSafe, bottomSafe) = computeSafeZone(root, metrics)
+            val visibleTargets = collectVisibleTargets(root, pending, topSafe, bottomSafe)
 
-                if (result != null) {
-                    val rect = Rect()
-                    result.getBoundsInScreen(rect)
-                    val rootNow = service.getRootNode()
-                    val confirmBtn = NodeFinder.findByTextRegex(rootNow, Regex("确定\\s*\\(\\d+\\)"))
-                        ?: NodeFinder.findByText(rootNow, "确定")
-                    val confirmTop = Rect().let { r ->
-                        confirmBtn?.getBoundsInScreen(r)
-                        if (confirmBtn != null) r.top else metrics.heightPixels
-                    }
-                    // 动态安全区：避开标题栏与底部确认区，兼容不同分辨率/状态栏高度
-                    val topSafe = (metrics.heightPixels * 0.10f).toInt()
-                    val bottomSafe = minOf(
-                        confirmTop - 12,
-                        (metrics.heightPixels * 0.96f).toInt()
-                    )
+            if (visibleTargets.isNotEmpty()) {
+                log("[选群] scroll=$scroll 命中屏内目标: ${visibleTargets.joinToString(", ") { it.name }}")
+            } else {
+                log("[选群] scroll=$scroll 本屏未命中目标，待选: ${pending.joinToString(", ")}")
+            }
 
-                    if (rect.centerY() in topSafe..bottomSafe) {
-                        val beforeCount = readSelectedCount(rootNow)
-                        if (clickAndVerify(groupName, rect.centerY(), beforeCount)) {
-                            selectedCount++
-                            found = true
-                            break
-                        }
-                        log("[选群] 勾选未生效,继续滑动重找: $groupName")
-                    } else {
-                        // 区间外仅跳过，不做反向滑动，避免死循环
-                        log("[选群] 找到但 bounds=[${rect.left},${rect.top},${rect.right},${rect.bottom}] 不在动态安全区[$topSafe,$bottomSafe],继续滑")
-                    }
+            var matchedThisScreen = 0
+            for (target in visibleTargets) {
+                if (stopped()) return selectedCount > 0
+                if (target.name !in pending) continue
+
+                val beforeCount = readSelectedCount(service.getRootNode())
+                if (clickAndVerify(target.name, target.rect.centerY(), beforeCount)) {
+                    pending.remove(target.name)
+                    selectedCount++
+                    matchedThisScreen++
                 } else {
-                    // v2.4.14: 精确未命中时 dump 屏内所有 "转发X" 节点(含完整 bounds),
-                    // 帮诊断: 转发1 是真不在屏内 / 在屏内但 text 不同 / 在屏内但 bounds 异常
-                    val transfers = NodeFinder.findAll(root) {
-                        it.text?.toString()?.startsWith("转发") == true
-                    }.map {
-                        val r = Rect()
-                        it.getBoundsInScreen(r)
-                        "${it.text}@[${r.left},${r.top},${r.right},${r.bottom}]"
-                    }
-                    log("[选群] scroll=$scroll 未命中 $groupName,屏内转发X(${transfers.size}): ${transfers.take(12).joinToString(" | ")}")
-                }
-
-                // 没找到 → 向下滑动继续找
-                if (scroll < 14) {
-                    GestureHelper.swipeDown(service, metrics)
-                    GestureHelper.delay(800)  // v2.4.12: 500 → 800,等列表惯性停
+                    log("[选群] 勾选未生效,保留待选: ${target.name}")
                 }
             }
 
-            if (!found) {
-                log("[选群] ✗ 未找到: $groupName")
-                val root = service.getRootNode()
-                if (root != null) {
-                    val allTexts = NodeFinder.getAllTexts(root)
-                    val summary = allTexts.filter { it.text.trim().isNotEmpty() }
-                        .take(10).joinToString(", ") { "\"${it.text.take(20)}\"" }
-                    log("[选群] 页面文本: $summary")
-                }
+            if (pending.isEmpty()) break
+
+            val screenSignature = buildPageSignature(root, topSafe, bottomSafe)
+            if (matchedThisScreen == 0 && screenSignature == lastPageSignature) {
+                log("[选群] 列表已到底且本屏无新增命中，停止扫描")
+                break
+            }
+            lastPageSignature = screenSignature
+
+            if (scroll < 20) {
+                GestureHelper.swipeDown(service, metrics)
+                GestureHelper.delay(800)  // 等列表惯性停稳，避免重复扫描同一屏
             }
         }
 
-        log("[选群] 共勾选 $selectedCount/${groups.size}")
+        if (pending.isNotEmpty()) {
+            log("[选群] ✗ 未找到: ${pending.joinToString(", ")}")
+            val root = service.getRootNode()
+            if (root != null) {
+                val allTexts = NodeFinder.getAllTexts(root)
+                val summary = allTexts.filter { it.text.trim().isNotEmpty() }
+                    .take(10).joinToString(", ") { "\"${it.text.take(20)}\"" }
+                log("[选群] 页面文本: $summary")
+            }
+        }
+
+        log("[选群] 共勾选 $selectedCount/${pending.size + selectedCount}")
 
         // 点击底部"确定(N)"按钮，进入发送确认弹窗
         if (selectedCount > 0) {
