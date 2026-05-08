@@ -44,6 +44,7 @@ object MessageForwarder {
         if (k < unreadCount) {
             log("[转发] 徽章 $unreadCount 超过上限 ${Config.maxForwardCount},截断为 $k")
         }
+        val isSingleMessage = k == 1
 
         // v2.4.0: 先数当前屏幕消息,够则直接选;不够走分割线(消息超屏企微必渲染分割线)
         log("[转发] 步骤1: 数当前屏幕消息...")
@@ -114,15 +115,20 @@ object MessageForwarder {
             log("[转发] ✓ 已点击'多选'")
             GestureHelper.delay(800)
 
-            // 步骤6：全选（分割线路径必须滑到底，屏幕直选路径可快速点击）
-            log("[转发] 步骤6: 滚动全选 (needScroll=$usedDivider)...")
-            if (!scrollAndSelectToHere(service, metrics, needScroll = usedDivider)) {
-                log("[转发] ✗ 全选失败")
-                dumpOnFailure(service, "全选失败_批${batchIdx + 1}")
-                exitMultiSelect(service)
-                if (batchIdx == 0) return false else continue
+            // 步骤6：单条消息不做扩选，避免误点"选择到这里"把旧消息带上
+            if (isSingleMessage) {
+                log("[转发] 步骤6: 单条新消息，跳过'选择到这里'扩选")
+            } else {
+                // 分割线路径必须滑到底，屏幕直选路径可快速点击
+                log("[转发] 步骤6: 滚动全选 (needScroll=$usedDivider)...")
+                if (!scrollAndSelectToHere(service, metrics, needScroll = usedDivider)) {
+                    log("[转发] ✗ 全选失败")
+                    dumpOnFailure(service, "全选失败_批${batchIdx + 1}")
+                    exitMultiSelect(service)
+                    if (batchIdx == 0) return false else continue
+                }
+                log("[转发] ✓ 全选完成")
             }
-            log("[转发] ✓ 全选完成")
 
             // 步骤7：点击转发
             log("[转发] 步骤7: 点击'转发'...")
@@ -375,6 +381,17 @@ object MessageForwarder {
             val rect: Rect,
         )
 
+        enum class EdgeZone {
+            TOP,
+            BOTTOM
+        }
+
+        data class EdgeGroup(
+            val name: String,
+            val rect: Rect,
+            val zone: EdgeZone,
+        )
+
         fun readSelectedCount(root: AccessibilityNodeInfo?): Int? {
             val btn = NodeFinder.findByTextRegex(root, Regex("确定\\s*\\(\\d+\\)")) ?: return null
             val text = btn.text?.toString() ?: return null
@@ -425,21 +442,39 @@ object MessageForwarder {
             pending: Set<String>,
             topSafe: Int,
             bottomSafe: Int
-        ): List<VisibleGroup> {
-            if (pending.isEmpty()) return emptyList()
-            val chosen = linkedMapOf<String, VisibleGroup>()
-            for (node in NodeFinder.findAll(root) {
+        ): Pair<List<VisibleGroup>, List<EdgeGroup>> {
+            if (pending.isEmpty()) return emptyList<VisibleGroup>() to emptyList()
+            val matchedNodes = NodeFinder.findAll(root) {
                 val text = it.text?.toString()?.trim() ?: return@findAll false
                 text in pending
-            }) {
-                val text = node.text?.toString()?.trim() ?: continue
-                if (text in chosen) continue
+            }.sortedWith(compareBy<AccessibilityNodeInfo>({ node ->
                 val rect = Rect()
                 node.getBoundsInScreen(rect)
-                if (rect.centerY() !in topSafe..bottomSafe) continue
-                chosen[text] = VisibleGroup(text, rect)
+                rect.centerY()
+            }, { node ->
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                rect.left
+            }))
+
+            val clickable = linkedMapOf<String, VisibleGroup>()
+            val edge = linkedMapOf<String, EdgeGroup>()
+            for (node in matchedNodes) {
+                val text = node.text?.toString()?.trim() ?: continue
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                val centerY = rect.centerY()
+                if (centerY in topSafe..bottomSafe) {
+                    clickable[text] = VisibleGroup(text, rect)
+                    edge.remove(text)
+                    continue
+                }
+                if (text !in clickable && text !in edge) {
+                    val zone = if (centerY < topSafe) EdgeZone.TOP else EdgeZone.BOTTOM
+                    edge[text] = EdgeGroup(text, rect, zone)
+                }
             }
-            return chosen.values.sortedWith(compareBy({ it.rect.centerY() }, { it.rect.left }))
+            return clickable.values.toList() to edge.values.toList()
         }
 
         fun buildPageSignature(root: AccessibilityNodeInfo, topSafe: Int, bottomSafe: Int): String {
@@ -450,6 +485,29 @@ object MessageForwarder {
                 }
                 .take(20)
                 .joinToString("|") { "${it.text.trim()}@${it.bounds.top}" }
+        }
+
+        fun formatEdgeTarget(target: EdgeGroup): String {
+            val zone = if (target.zone == EdgeZone.TOP) "topEdge" else "bottomEdge"
+            return "${target.name}@$zone[${target.rect.left},${target.rect.top},${target.rect.right},${target.rect.bottom}]"
+        }
+
+        fun pickEdgeAdjustmentTarget(edgeTargets: List<EdgeGroup>): EdgeGroup? {
+            if (edgeTargets.isEmpty()) return null
+            val topTargets = edgeTargets.filter { it.zone == EdgeZone.TOP }
+            val bottomTargets = edgeTargets.filter { it.zone == EdgeZone.BOTTOM }
+            val chosenZone = when {
+                bottomTargets.size > topTargets.size -> EdgeZone.BOTTOM
+                topTargets.size > bottomTargets.size -> EdgeZone.TOP
+                bottomTargets.isNotEmpty() -> EdgeZone.BOTTOM
+                else -> EdgeZone.TOP
+            }
+            val candidates = if (chosenZone == EdgeZone.BOTTOM) bottomTargets else topTargets
+            return if (chosenZone == EdgeZone.BOTTOM) {
+                candidates.minByOrNull { it.rect.centerY() }
+            } else {
+                candidates.maxByOrNull { it.rect.centerY() }
+            }
         }
 
         // 1. 等待选群页面加载
@@ -495,17 +553,28 @@ object MessageForwarder {
 
         var selectedCount = 0
         var lastPageSignature: String? = null
-        for (scroll in 0..20) {
+        val edgeAdjustAttempts = mutableMapOf<String, Int>()
+        var scroll = 0
+        while (scroll <= 20) {
             if (stopped()) return selectedCount > 0
             if (pending.isEmpty()) break
 
-            val root = service.getRootNode() ?: continue
+            val root = service.getRootNode()
+            if (root == null) {
+                log("[选群] scroll=$scroll 获取根节点失败，继续下滑重试")
+                if (scroll >= 20) break
+                GestureHelper.delay(300)
+                scroll++
+                continue
+            }
             val metrics = service.resources.displayMetrics
             val (topSafe, bottomSafe) = computeSafeZone(root, metrics)
-            val visibleTargets = collectVisibleTargets(root, pending, topSafe, bottomSafe)
+            val (visibleTargets, edgeTargets) = collectVisibleTargets(root, pending, topSafe, bottomSafe)
 
             if (visibleTargets.isNotEmpty()) {
                 log("[选群] scroll=$scroll 命中屏内目标: ${visibleTargets.joinToString(", ") { it.name }}")
+            } else if (edgeTargets.isNotEmpty()) {
+                log("[选群] scroll=$scroll 命中边缘目标: ${edgeTargets.joinToString(", ") { formatEdgeTarget(it) }}")
             } else {
                 log("[选群] scroll=$scroll 本屏未命中目标，待选: ${pending.joinToString(", ")}")
             }
@@ -527,17 +596,38 @@ object MessageForwarder {
 
             if (pending.isEmpty()) break
 
+            if (matchedThisScreen == 0 && edgeTargets.isNotEmpty()) {
+                val adjustTarget = pickEdgeAdjustmentTarget(edgeTargets)
+                if (adjustTarget != null) {
+                    val currentAttempts = edgeAdjustAttempts[adjustTarget.name] ?: 0
+                    if (currentAttempts < 2) {
+                        edgeAdjustAttempts[adjustTarget.name] = currentAttempts + 1
+                        if (adjustTarget.zone == EdgeZone.TOP) {
+                            log("[选群] ${adjustTarget.name} 命中标题区 bounds=[${adjustTarget.rect.left},${adjustTarget.rect.top},${adjustTarget.rect.right},${adjustTarget.rect.bottom}]，swipeDown 反向微调 (${currentAttempts + 1}/2)")
+                            GestureHelper.swipeDown(service, metrics)
+                        } else {
+                            log("[选群] ${adjustTarget.name} 命中底栏区 bounds=[${adjustTarget.rect.left},${adjustTarget.rect.top},${adjustTarget.rect.right},${adjustTarget.rect.bottom}]，swipeUp 反向微调 (${currentAttempts + 1}/2)")
+                            GestureHelper.swipeUp(service, metrics)
+                        }
+                        GestureHelper.delay(800)
+                        lastPageSignature = null
+                        continue
+                    }
+                    log("[选群] ${adjustTarget.name} 连续边缘微调 2 次仍未进入安全区，继续向下扫描")
+                }
+            }
+
             val screenSignature = buildPageSignature(root, topSafe, bottomSafe)
-            if (matchedThisScreen == 0 && screenSignature == lastPageSignature) {
+            if (matchedThisScreen == 0 && edgeTargets.isEmpty() && screenSignature == lastPageSignature) {
                 log("[选群] 列表已到底且本屏无新增命中，停止扫描")
                 break
             }
             lastPageSignature = screenSignature
 
-            if (scroll < 20) {
-                GestureHelper.swipeDown(service, metrics)
-                GestureHelper.delay(800)  // 等列表惯性停稳，避免重复扫描同一屏
-            }
+            if (scroll >= 20) break
+            GestureHelper.swipeDown(service, metrics)
+            GestureHelper.delay(800)  // 等列表惯性停稳，避免重复扫描同一屏
+            scroll++
         }
 
         if (pending.isNotEmpty()) {
