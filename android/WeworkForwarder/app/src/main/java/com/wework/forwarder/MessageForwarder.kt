@@ -381,6 +381,11 @@ object MessageForwarder {
      *   4. 点右下角蓝色"确定"按钮
      */
     private fun selectTargetGroups(service: WeWorkAccessibilityService, groups: List<String>): Boolean {
+        data class ListContainer(
+            val node: AccessibilityNodeInfo,
+            val rect: Rect,
+        )
+
         data class VisibleGroup(
             val name: String,
             val rect: Rect,
@@ -390,6 +395,12 @@ object MessageForwarder {
             val name: String,
             val rect: Rect,
             val zone: EdgeZone,
+        )
+
+        data class InvalidGroup(
+            val name: String,
+            val rect: Rect,
+            val reason: String,
         )
 
         fun readSelectedCount(root: AccessibilityNodeInfo?): Int? {
@@ -422,29 +433,69 @@ object MessageForwarder {
             return false
         }
 
-        fun computeSafeZone(root: AccessibilityNodeInfo?, metrics: DisplayMetrics): Pair<Int, Int> {
+        fun clipRect(rect: Rect, container: Rect): Rect? {
+            val clipped = Rect(
+                maxOf(rect.left, container.left),
+                maxOf(rect.top, container.top),
+                minOf(rect.right, container.right),
+                minOf(rect.bottom, container.bottom)
+            )
+            return if (clipped.left < clipped.right && clipped.top < clipped.bottom) clipped else null
+        }
+
+        fun findRecentChatList(root: AccessibilityNodeInfo, metrics: DisplayMetrics): ListContainer? {
+            val screenRect = Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
+            val candidates = NodeFinder.findAll(root) { node ->
+                val cls = node.className?.toString()
+                cls == "android.widget.ListView" || cls == "androidx.recyclerview.widget.RecyclerView"
+            }
+            return candidates.mapNotNull { node ->
+                val rawRect = Rect()
+                node.getBoundsInScreen(rawRect)
+                val visibleRect = clipRect(rawRect, screenRect) ?: return@mapNotNull null
+                if (visibleRect.width() < metrics.widthPixels * 0.6f) return@mapNotNull null
+                if (visibleRect.height() < metrics.heightPixels * 0.2f) return@mapNotNull null
+                ListContainer(node, visibleRect)
+            }.maxByOrNull { it.rect.width() * it.rect.height() }
+        }
+
+        fun computeSafeZone(
+            root: AccessibilityNodeInfo?,
+            metrics: DisplayMetrics,
+            listRect: Rect
+        ): Pair<Int, Int> {
             val confirmBtn = NodeFinder.findByTextRegex(root, Regex("确定\\s*\\(\\d+\\)"))
                 ?: NodeFinder.findByText(root, "确定")
             val confirmTop = Rect().let { rect ->
                 confirmBtn?.getBoundsInScreen(rect)
-                if (confirmBtn != null) rect.top else metrics.heightPixels
+                if (confirmBtn != null) rect.top else listRect.bottom
             }
-            val topSafe = (metrics.heightPixels * 0.10f).toInt()
-            val bottomSafe = minOf(
+            val topSafe = maxOf(
+                listRect.top + 12,
+                (metrics.heightPixels * 0.10f).toInt()
+            )
+            val bottomSafeCandidate = minOf(
+                listRect.bottom - 12,
                 confirmTop - 12,
                 (metrics.heightPixels * 0.96f).toInt()
             )
-            return topSafe to bottomSafe
+            val bottomSafe = if (bottomSafeCandidate > topSafe) {
+                bottomSafeCandidate
+            } else {
+                listRect.bottom - 12
+            }
+            return topSafe to maxOf(topSafe, bottomSafe)
         }
 
         fun collectVisibleTargets(
-            root: AccessibilityNodeInfo,
+            listNode: AccessibilityNodeInfo,
+            listRect: Rect,
             pending: Set<String>,
             topSafe: Int,
             bottomSafe: Int
-        ): Pair<List<VisibleGroup>, List<EdgeGroup>> {
-            if (pending.isEmpty()) return emptyList<VisibleGroup>() to emptyList()
-            val matchedNodes = NodeFinder.findAll(root) {
+        ): Triple<List<VisibleGroup>, List<EdgeGroup>, List<InvalidGroup>> {
+            if (pending.isEmpty()) return Triple(emptyList(), emptyList(), emptyList())
+            val matchedNodes = NodeFinder.findAll(listNode) {
                 val text = it.text?.toString()?.trim() ?: return@findAll false
                 text in pending
             }.sortedWith(compareBy<AccessibilityNodeInfo>({ node ->
@@ -459,14 +510,35 @@ object MessageForwarder {
 
             val clickable = linkedMapOf<String, VisibleGroup>()
             val edge = linkedMapOf<String, EdgeGroup>()
+            val invalid = linkedMapOf<String, InvalidGroup>()
             for (node in matchedNodes) {
                 val text = node.text?.toString()?.trim() ?: continue
-                val rect = Rect()
-                node.getBoundsInScreen(rect)
+                val rawRect = Rect()
+                node.getBoundsInScreen(rawRect)
+                if (rawRect.left >= rawRect.right || rawRect.top >= rawRect.bottom) {
+                    if (text !in clickable && text !in edge && text !in invalid) {
+                        invalid[text] = InvalidGroup(text, rawRect, "bounds_invalid")
+                    }
+                    continue
+                }
+                val rect = clipRect(rawRect, listRect)
+                if (rect == null) {
+                    if (text !in clickable && text !in edge && text !in invalid) {
+                        invalid[text] = InvalidGroup(text, rawRect, "outside_list")
+                    }
+                    continue
+                }
+                if (rect.width() < 40 || rect.height() < 12) {
+                    if (text !in clickable && text !in edge && text !in invalid) {
+                        invalid[text] = InvalidGroup(text, rawRect, "too_small")
+                    }
+                    continue
+                }
                 val centerY = rect.centerY()
                 if (centerY in topSafe..bottomSafe) {
                     clickable[text] = VisibleGroup(text, rect)
                     edge.remove(text)
+                    invalid.remove(text)
                     continue
                 }
                 if (text !in clickable && text !in edge) {
@@ -474,22 +546,31 @@ object MessageForwarder {
                     edge[text] = EdgeGroup(text, rect, zone)
                 }
             }
-            return clickable.values.toList() to edge.values.toList()
+            return Triple(clickable.values.toList(), edge.values.toList(), invalid.values.toList())
         }
 
-        fun buildPageSignature(root: AccessibilityNodeInfo, topSafe: Int, bottomSafe: Int): String {
-            return NodeFinder.getAllTexts(root)
+        fun buildListSignature(listNode: AccessibilityNodeInfo, listRect: Rect): String {
+            return NodeFinder.getAllTexts(listNode)
                 .filter {
                     val text = it.text.trim()
-                    text.isNotEmpty() && it.bounds.centerY() in topSafe..bottomSafe
+                    if (text.isEmpty()) return@filter false
+                    val clipped = clipRect(it.bounds, listRect) ?: return@filter false
+                    clipped.width() >= 40 && clipped.height() >= 12
                 }
-                .take(20)
-                .joinToString("|") { "${it.text.trim()}@${it.bounds.top}" }
+                .take(24)
+                .joinToString("|") {
+                    val clipped = clipRect(it.bounds, listRect) ?: it.bounds
+                    "${it.text.trim()}@${clipped.top}"
+                }
         }
 
         fun formatEdgeTarget(target: EdgeGroup): String {
             val zone = if (target.zone == EdgeZone.TOP) "topEdge" else "bottomEdge"
             return "${target.name}@$zone[${target.rect.left},${target.rect.top},${target.rect.right},${target.rect.bottom}]"
+        }
+
+        fun formatInvalidTarget(target: InvalidGroup): String {
+            return "${target.name}@${target.reason}[${target.rect.left},${target.rect.top},${target.rect.right},${target.rect.bottom}]"
         }
 
         fun pickEdgeAdjustmentTarget(edgeTargets: List<EdgeGroup>): EdgeGroup? {
@@ -508,6 +589,38 @@ object MessageForwarder {
             } else {
                 candidates.maxByOrNull { it.rect.centerY() }
             }
+        }
+
+        fun moveToRecentChatTop(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
+            var lastSignature: String? = null
+            var stableCount = 0
+            repeat(25) { attempt ->
+                if (stopped()) return false
+                val root = service.getRootNode()
+                if (root == null) {
+                    GestureHelper.delay(300)
+                    return@repeat
+                }
+                val list = findRecentChatList(root, metrics) ?: run {
+                    GestureHelper.delay(300)
+                    return@repeat
+                }
+                val signature = buildListSignature(list.node, list.rect)
+                if (signature.isNotEmpty() && signature == lastSignature) {
+                    stableCount++
+                    if (stableCount >= 2) {
+                        log("[选群] 最近聊天已回到顶部 (attempt=${attempt + 1})")
+                        return true
+                    }
+                } else {
+                    stableCount = 0
+                }
+                lastSignature = signature
+                GestureHelper.swipeUp(service, metrics)
+                GestureHelper.delay(400)
+            }
+            log("[选群] 未确认已到顶部，继续从当前列表位置开始扫描")
+            return true
         }
 
         // 1. 等待选群页面加载
@@ -530,12 +643,11 @@ object MessageForwarder {
         log("[选群] ✓ 已切换到多选模式")
         GestureHelper.delay(800)
 
-        // v2.4.12: 进选群页后先 swipeUp 8 次回列表顶,
-        // 防止上一批选完停留在列表中段导致靠前的群名被漏
+        // 进选群页后先回到最近聊天顶部，避免从中段开始导致前面的群名被漏
         val metrics0 = service.resources.displayMetrics
-        repeat(8) {
-            GestureHelper.swipeUp(service, metrics0)
-            GestureHelper.delay(250)
+        if (!moveToRecentChatTop(service, metrics0)) {
+            log("[选群] 回顶部过程被中断")
+            return false
         }
         GestureHelper.delay(500)
 
@@ -555,21 +667,37 @@ object MessageForwarder {
         var lastPageSignature: String? = null
         val edgeAdjustAttempts = mutableMapOf<String, Int>()
         var scroll = 0
-        while (scroll <= 20) {
+        var bottomStableCount = 0
+        while (scroll <= 60) {
             if (stopped()) return selectedCount > 0
             if (pending.isEmpty()) break
 
             val root = service.getRootNode()
             if (root == null) {
                 log("[选群] scroll=$scroll 获取根节点失败，继续下滑重试")
-                if (scroll >= 20) break
+                if (scroll >= 60) break
                 GestureHelper.delay(300)
                 scroll++
                 continue
             }
             val metrics = service.resources.displayMetrics
-            val (topSafe, bottomSafe) = computeSafeZone(root, metrics)
-            val (visibleTargets, edgeTargets) = collectVisibleTargets(root, pending, topSafe, bottomSafe)
+            val list = findRecentChatList(root, metrics)
+            if (list == null) {
+                log("[选群] scroll=$scroll 找不到最近聊天列表")
+                if (scroll >= 60) break
+                GestureHelper.swipeDown(service, metrics)
+                GestureHelper.delay(500)
+                scroll++
+                continue
+            }
+            val (topSafe, bottomSafe) = computeSafeZone(root, metrics, list.rect)
+            val (visibleTargets, edgeTargets, invalidTargets) = collectVisibleTargets(
+                list.node,
+                list.rect,
+                pending,
+                topSafe,
+                bottomSafe
+            )
 
             if (visibleTargets.isNotEmpty()) {
                 log("[选群] scroll=$scroll 命中屏内目标: ${visibleTargets.joinToString(", ") { it.name }}")
@@ -577,6 +705,9 @@ object MessageForwarder {
                 log("[选群] scroll=$scroll 命中边缘目标: ${edgeTargets.joinToString(", ") { formatEdgeTarget(it) }}")
             } else {
                 log("[选群] scroll=$scroll 本屏未命中目标，待选: ${pending.joinToString(", ")}")
+            }
+            if (invalidTargets.isNotEmpty()) {
+                log("[选群] scroll=$scroll 忽略异常节点: ${invalidTargets.take(6).joinToString(", ") { formatInvalidTarget(it) }}")
             }
 
             var matchedThisScreen = 0
@@ -617,14 +748,19 @@ object MessageForwarder {
                 }
             }
 
-            val screenSignature = buildPageSignature(root, topSafe, bottomSafe)
-            if (matchedThisScreen == 0 && edgeTargets.isEmpty() && screenSignature == lastPageSignature) {
-                log("[选群] 列表已到底且本屏无新增命中，停止扫描")
+            val screenSignature = buildListSignature(list.node, list.rect)
+            bottomStableCount = if (matchedThisScreen == 0 && edgeTargets.isEmpty() && screenSignature == lastPageSignature) {
+                bottomStableCount + 1
+            } else {
+                0
+            }
+            if (bottomStableCount >= 2) {
+                log("[选群] 最近聊天已扫到底部，停止扫描")
                 break
             }
             lastPageSignature = screenSignature
 
-            if (scroll >= 20) break
+            if (scroll >= 60) break
             GestureHelper.swipeDown(service, metrics)
             GestureHelper.delay(800)  // 等列表惯性停稳，避免重复扫描同一屏
             scroll++
