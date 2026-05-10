@@ -255,6 +255,55 @@ object MessageCollector {
         chatList.getBoundsInScreen(listRect)
         val childCount = chatList.childCount
         var currentTime = ""
+
+        fun isLikelyMessageRow(node: AccessibilityNodeInfo, rect: Rect): Boolean {
+            val visibleBelowDivider = minOf(rect.bottom, listRect.bottom) - maxOf(rect.top, minTop)
+            if (rect.height() < 50 || visibleBelowDivider < 40) return false
+
+            val allTexts = NodeFinder.getAllTexts(node)
+            val contentTexts = allTexts.map { it.text.trim() }.filter { it.isNotEmpty() }
+            val hasOnlyNonMessageText = contentTexts.isNotEmpty() && contentTexts.all {
+                isTimeLabel(it) || isSystemMessage(it) || it.contains("新消息") || isUiElement(it)
+            }
+            if (hasOnlyNonMessageText) return false
+
+            val avatarMin = (screenWidth * 0.018).toInt()
+            val avatarMax = (screenWidth * 0.14).toInt()
+            val hasAvatarPlaceholder = allTexts.any {
+                it.text.trim().isEmpty()
+                        && it.bounds.width() in avatarMin..avatarMax
+                        && it.bounds.height() in avatarMin..avatarMax
+            }
+            val hasLeftAvatar = findLeftAvatarImage(node, screenWidth) != null
+            val hasBubbleCandidate = NodeFinder.findAll(node) {
+                it.isClickable
+                        && it != node
+                        && it.className?.toString() != "android.widget.ImageView"
+            }.any {
+                val r = Rect()
+                it.getBoundsInScreen(r)
+                r.bottom > minTop && r.width() >= 80 && r.height() >= 30
+            }
+            val hasVisualMessage = findCardLabel(node) != null || findLargeImage(node, 120)
+            val hasMessageText = contentTexts.any {
+                !isTimeLabel(it) && !isSystemMessage(it) && !it.contains("新消息") && !isUiElement(it)
+            }
+
+            return hasAvatarPlaceholder
+                    || hasLeftAvatar
+                    || hasBubbleCandidate
+                    || hasVisualMessage
+                    || (node.isClickable && hasMessageText && rect.height() >= 60)
+        }
+
+        fun textSummary(node: AccessibilityNodeInfo): String {
+            return NodeFinder.getAllTexts(node)
+                .map { it.text.trim() }
+                .filter { it.isNotEmpty() }
+                .take(4)
+                .joinToString("/")
+        }
+
         for (i in 0 until childCount) {
             val child = chatList.getChild(i) ?: continue
             val rect = Rect()
@@ -268,6 +317,10 @@ object MessageCollector {
                     // 视为底部边缘的"裁剪到无法解析的卡片",触发 swipeDown
                     if (rect.bottom >= listRect.bottom - 10 && i < childCount - 1) {
                         log("[分割线] ListView 底部边缘有 Skip 节点 (bottom=${rect.bottom}, listBottom=${listRect.bottom}), 疑似被裁剪到无法解析的卡片, swipeDown 重试")
+                        return null
+                    }
+                    if (isLikelyMessageRow(child, rect)) {
+                        log("[分割线] 第一条疑似消息解析失败，不跳到后续消息，swipeDown 重试 (i=$i, rect=$rect, texts=${textSummary(child)})")
                         return null
                     }
                     continue
