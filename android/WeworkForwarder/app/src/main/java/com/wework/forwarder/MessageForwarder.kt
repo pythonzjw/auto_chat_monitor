@@ -213,7 +213,10 @@ object MessageForwarder {
             val rect = Rect()
             multiSelectBtn.getBoundsInScreen(rect)
             log("[转发] 点击'多选' attempt=${attempt + 1} (${rect.centerX()}, ${rect.centerY()})")
-            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+            val clicked = NodeFinder.clickNode(service, multiSelectBtn)
+            if (!clicked) {
+                service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+            }
             GestureHelper.delay(900)
 
             if (isInMessageMultiSelectMode(service)) {
@@ -230,18 +233,40 @@ object MessageForwarder {
     }
 
     private fun isInMessageMultiSelectMode(service: WeWorkAccessibilityService): Boolean {
+        val metrics = service.resources.displayMetrics
         for (root in service.getAllRootNodes()) {
+            val rootRect = Rect()
+            root.getBoundsInScreen(rootRect)
             val hasSelectToHere = NodeFinder.findByTextContains(root, "选择到这里") != null
                 || NodeFinder.findAll(root) { node ->
                     node.contentDescription?.toString()?.contains("选择到这里") == true
                 }.isNotEmpty()
             if (hasSelectToHere) return true
 
-            val hasCancel = NodeFinder.findByText(root, "取消") != null
-                || NodeFinder.findByDesc(root, "取消") != null
-            val hasForward = NodeFinder.findByText(root, "转发") != null
-                || NodeFinder.findByDesc(root, "转发") != null
-            if (hasCancel && hasForward) return true
+            // 长按菜单也可能有"转发"，必须限定为全屏多选页的顶部取消 + 底部工具栏转发。
+            if (rootRect.width() < metrics.widthPixels * 0.75f
+                || rootRect.height() < metrics.heightPixels * 0.75f) {
+                continue
+            }
+            val topLimit = rootRect.top + (rootRect.height() * 0.22f).toInt()
+            val bottomLimit = rootRect.bottom - (rootRect.height() * 0.22f).toInt()
+            val hasTopCancel = NodeFinder.findAll(root) { node ->
+                val text = node.text?.toString()
+                val desc = node.contentDescription?.toString()
+                if (text != "取消" && desc != "取消") return@findAll false
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                rect.centerY() <= topLimit
+            }.isNotEmpty()
+            val hasBottomForward = NodeFinder.findAll(root) { node ->
+                val text = node.text?.toString()
+                val desc = node.contentDescription?.toString()
+                if (text != "转发" && desc != "转发") return@findAll false
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                rect.centerY() >= bottomLimit
+            }.isNotEmpty()
+            if (hasTopCancel && hasBottomForward) return true
         }
         return false
     }

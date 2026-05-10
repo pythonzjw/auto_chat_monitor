@@ -342,6 +342,8 @@ object MessageCollector {
         val childCount = chatList.childCount
         var currentTime = ""
         val maxFirstRowGap = (listRect.height() * 0.20f).toInt().coerceAtLeast(180)
+        val pressTopSafe = listRect.top + 24
+        val pressBottomSafe = listRect.bottom - 24
 
         fun isLikelyMessageRow(node: AccessibilityNodeInfo, rect: Rect): Boolean {
             val visibleBelowDivider = minOf(rect.bottom, listRect.bottom) - maxOf(rect.top, minTop)
@@ -416,10 +418,6 @@ object MessageCollector {
                     continue
                 }
                 is ParseResult.Msg -> {
-                    if (rect.top < minTop - 12) {
-                        log("[分割线] 第一条候选跨过分割线，等待微调 (i=$i, rect=$rect, minTop=$minTop)")
-                        return null
-                    }
                     val gap = rect.top - minTop
                     if (gap > maxFirstRowGap) {
                         log("[分割线] 首个可解析消息离分割线过远，拒绝跳到后续消息 (i=$i, gap=$gap, max=$maxFirstRowGap, rect=$rect)")
@@ -438,8 +436,12 @@ object MessageCollector {
                         }
                     }
                     val bubbleRect = pickBubbleRectBelow(child, minTop)
-                    if (bubbleRect.top < minTop - 8) {
-                        log("[分割线] 气泡长按区域跨过分割线，等待微调 (i=$i, bubble=$bubbleRect, minTop=$minTop)")
+                    if (bubbleRect.centerY() <= minTop + 8) {
+                        log("[分割线] 气泡中心仍在分割线附近，等待微调 (i=$i, bubble=$bubbleRect, minTop=$minTop)")
+                        return null
+                    }
+                    if (bubbleRect.centerY() !in pressTopSafe..pressBottomSafe) {
+                        log("[分割线] 气泡长按区域不安全，等待微调 (i=$i, bubble=$bubbleRect, safe=$pressTopSafe..$pressBottomSafe)")
                         return null
                     }
                     log("[分割线] 接受第一条候选 i=$i rect=$rect bubble=$bubbleRect type=${parsed.message.type}")
@@ -542,7 +544,7 @@ object MessageCollector {
         if (bubble != null) {
             val cy = (maxOf(bubble.top, minTop) + bubble.height() / 3)
                 .coerceIn(bubble.top + 20, bubble.bottom - 20)
-            log("[分割线长按] 找到气泡 bounds=$bubble, 长按 (${bubble.centerX()}, $cy)")
+            log("[分割线坐标] 找到气泡 bounds=$bubble, 计划长按 (${bubble.centerX()}, $cy)")
             return Rect(bubble.centerX() - 40, cy - 20, bubble.centerX() + 40, cy + 20)
         }
 
@@ -554,7 +556,7 @@ object MessageCollector {
             ?.bounds
         if (textRect != null) {
             val cy = (maxOf(textRect.top, minTop) + 30).coerceAtMost(textRect.bottom - 10)
-            log("[分割线长按] 文本兜底 bounds=$textRect, 长按 (${textRect.centerX()}, $cy)")
+            log("[分割线坐标] 文本兜底 bounds=$textRect, 计划长按 (${textRect.centerX()}, $cy)")
             return Rect(textRect.centerX() - 40, cy - 20, textRect.centerX() + 40, cy + 20)
         }
 
@@ -562,7 +564,7 @@ object MessageCollector {
         val effectiveTop = maxOf(itemRect.top, minTop)
         val targetY = (effectiveTop + 100).coerceIn(effectiveTop + 30, itemRect.bottom - 30)
         val cx = itemRect.centerX()
-        log("[分割线长按] 终极兜底 itemRect=$itemRect, 长按 ($cx, $targetY)")
+        log("[分割线坐标] 终极兜底 itemRect=$itemRect, 计划长按 ($cx, $targetY)")
         return Rect(cx - 40, targetY - 20, cx + 40, targetY + 20)
     }
 
