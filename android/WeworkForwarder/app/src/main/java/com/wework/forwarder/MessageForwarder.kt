@@ -116,24 +116,19 @@ object MessageForwarder {
                 dumpOnFailure(service, "锚点无定位信息_批${batchIdx + 1}")
                 if (batchIdx == 0) return false else continue
             }
+            if (!isSafeLongPressRect(pressRect, metrics)) {
+                log("[转发] ✗ 锚点在危险区域，拒绝长按 bounds=$pressRect")
+                dumpOnFailure(service, "锚点危险区域_批${batchIdx + 1}")
+                if (batchIdx == 0) return false else continue
+            }
             log("[转发] 长按坐标: (${pressRect.centerX()}, ${pressRect.centerY()})")
             service.longPressAt(pressRect.centerX().toFloat(), pressRect.centerY().toFloat())
             GestureHelper.delay(1200)
 
-            // 步骤5：点击"多选"（在所有企微窗口中查找，包括弹出菜单）
-            log("[转发] 步骤5: 查找'多选'...")
-            val multiSelectBtn = waitForNodeInAllWindows(service, 3000) { root ->
-                NodeFinder.findByText(root, "多选") ?: NodeFinder.findByDesc(root, "多选")
-            }
-            if (multiSelectBtn == null) {
-                log("[转发] ✗ 找不到'多选'按钮")
-                dumpAllWindows(service, "找不到多选_批${batchIdx + 1}")
-                dismissPopup(service, metrics)
+            // 步骤5：点击"多选"并确认已进入多选模式，避免弹出菜单未点中后继续扩选
+            if (!clickMultiSelectWithVerify(service, metrics, batchIdx + 1)) {
                 if (batchIdx == 0) return false else continue
             }
-            NodeFinder.clickNode(service, multiSelectBtn)
-            log("[转发] ✓ 已点击'多选'")
-            GestureHelper.delay(800)
 
             // 步骤6：单条消息不做扩选，避免误点"选择到这里"把旧消息带上
             if (isSingleMessage) {
@@ -193,6 +188,63 @@ object MessageForwarder {
     }
 
     // ===== 内部方法 =====
+
+    private fun isSafeLongPressRect(rect: Rect, metrics: DisplayMetrics): Boolean {
+        val topSafe = (metrics.heightPixels * 0.18f).toInt()
+        val bottomSafe = (metrics.heightPixels * 0.84f).toInt()
+        return rect.centerY() in topSafe..bottomSafe
+    }
+
+    private fun clickMultiSelectWithVerify(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        batchNumber: Int
+    ): Boolean {
+        log("[转发] 步骤5: 查找'多选'...")
+        repeat(2) { attempt ->
+            val multiSelectBtn = waitForNodeInAllWindows(service, if (attempt == 0) 3000 else 1500) { root ->
+                NodeFinder.findByText(root, "多选") ?: NodeFinder.findByDesc(root, "多选")
+            }
+            if (multiSelectBtn == null) {
+                log("[转发] 第 ${attempt + 1} 次找不到'多选'按钮")
+                return@repeat
+            }
+
+            val rect = Rect()
+            multiSelectBtn.getBoundsInScreen(rect)
+            log("[转发] 点击'多选' attempt=${attempt + 1} (${rect.centerX()}, ${rect.centerY()})")
+            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+            GestureHelper.delay(900)
+
+            if (isInMessageMultiSelectMode(service)) {
+                log("[转发] ✓ 已进入消息多选模式")
+                return true
+            }
+            log("[转发] 点击'多选'后未进入多选模式，准备重试")
+        }
+
+        log("[转发] ✗ 点击'多选'失败，终止本批，避免误选旧消息")
+        dumpAllWindows(service, "多选点击未生效_批$batchNumber")
+        dismissPopup(service, metrics)
+        return false
+    }
+
+    private fun isInMessageMultiSelectMode(service: WeWorkAccessibilityService): Boolean {
+        for (root in service.getAllRootNodes()) {
+            val hasSelectToHere = NodeFinder.findByTextContains(root, "选择到这里") != null
+                || NodeFinder.findAll(root) { node ->
+                    node.contentDescription?.toString()?.contains("选择到这里") == true
+                }.isNotEmpty()
+            if (hasSelectToHere) return true
+
+            val hasCancel = NodeFinder.findByText(root, "取消") != null
+                || NodeFinder.findByDesc(root, "取消") != null
+            val hasForward = NodeFinder.findByText(root, "转发") != null
+                || NodeFinder.findByDesc(root, "转发") != null
+            if (hasCancel && hasForward) return true
+        }
+        return false
+    }
 
     private fun scrollToBottom(service: WeWorkAccessibilityService, metrics: DisplayMetrics) {
         // 滑动慢化后单次幅度 8%,需要更多轮才能到底
