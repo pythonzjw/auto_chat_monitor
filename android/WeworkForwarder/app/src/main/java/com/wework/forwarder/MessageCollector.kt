@@ -191,6 +191,20 @@ object MessageCollector {
         maxScrolls: Int = 0,
     ): FirstNewMessageInfo? {
         val dividerText = "以下为新消息"
+        fun fastSwipeTowardOlder() {
+            val w = metrics.widthPixels.toFloat()
+            val h = metrics.heightPixels.toFloat()
+            service.swipe(w / 2, h * 0.42f, w / 2, h * 0.60f, duration = 320)
+            GestureHelper.delayExact(220)
+        }
+
+        fun smallSwipeTowardNewer() {
+            val w = metrics.widthPixels.toFloat()
+            val h = metrics.heightPixels.toFloat()
+            service.swipe(w / 2, h * 0.53f, w / 2, h * 0.48f, duration = 260)
+            GestureHelper.delayExact(220)
+        }
+
         repeat(maxScrolls + 1) { iter ->
             if (!CollectorService.isRunning) return null
             val root = service.getRootNode() ?: return null
@@ -206,24 +220,22 @@ object MessageCollector {
                 // v2.4.11: 守卫 — 分割线节点存在但 bounds 在 ListView 顶部之上(常见于负坐标)时,
                 // 视为"还没滚到位",继续 swipeUp,不接受当前屏幕上方那条作为锚点
                 if (dRect.bottom <= listRect.top + 50) {
-                    log("[分割线] 节点存在但在可视区上方 (dRect.bottom=${dRect.bottom}, listTop=${listRect.top}), 继续 swipeUp")
+                    log("[分割线] 节点存在但在可视区上方 (dRect.bottom=${dRect.bottom}, listTop=${listRect.top}), 快速上翻找分割线")
                     if (iter == maxScrolls) {
                         log("[分割线] $maxScrolls 次 swipeUp 仍未把分割线滚进可视区, 走 ListView 兜底")
                         return null
                     }
-                    GestureHelper.swipeUp(service, metrics)
-                    GestureHelper.delay(400)
+                    fastSwipeTowardOlder()
                     return@repeat
                 }
                 val firstNew = findFirstBubbleBelow(chatList, dRect.bottom, service)
                 if (firstNew != null) {
-                    log("[分割线] 命中 y=${dRect.centerY()}, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
+                    log("[分割线] 命中 bounds=$dRect, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
                     return firstNew
                 }
-                // 命中分割线但其下方暂无气泡: 列表恰好停在分割线位置, swipeDown 让新消息显出
-                log("[分割线] 命中分割线但下方无气泡, swipeDown 让新消息显出")
-                GestureHelper.swipeDown(service, metrics)
-                GestureHelper.delay(400)
+                // 分割线已可见但第一条消息还不完整: 小幅向新消息方向微调，避免一次滑到第二条。
+                log("[分割线] 命中分割线但第一条新消息未稳定露出, 小幅微调后重试")
+                smallSwipeTowardNewer()
                 return@repeat
             }
             if (divider != null && chatList == null) {
@@ -234,8 +246,7 @@ object MessageCollector {
                 log("[分割线] $maxScrolls 次 swipeUp 仍未命中, 走 ListView 兜底")
                 return null
             }
-            GestureHelper.swipeUp(service, metrics)  // 查看旧消息(分割线在屏幕上方)
-            GestureHelper.delay(400)
+            fastSwipeTowardOlder()
         }
         return null
     }
@@ -255,6 +266,7 @@ object MessageCollector {
         chatList.getBoundsInScreen(listRect)
         val childCount = chatList.childCount
         var currentTime = ""
+        val maxFirstRowGap = (listRect.height() * 0.20f).toInt().coerceAtLeast(180)
 
         fun isLikelyMessageRow(node: AccessibilityNodeInfo, rect: Rect): Boolean {
             val visibleBelowDivider = minOf(rect.bottom, listRect.bottom) - maxOf(rect.top, minTop)
@@ -311,7 +323,10 @@ object MessageCollector {
             if (rect.bottom <= minTop) continue
 
             when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
-                is ParseResult.TimeLabel -> currentTime = parsed.time
+                is ParseResult.TimeLabel -> {
+                    currentTime = parsed.time
+                    log("[分割线] 跳过时间行 i=$i rect=$rect time=${parsed.time}")
+                }
                 is ParseResult.Skip -> {
                     // v2.4.10: 仅在 Skip 节点贴着 ListView 底边且不是末尾时,
                     // 视为底部边缘的"裁剪到无法解析的卡片",触发 swipeDown
@@ -326,6 +341,15 @@ object MessageCollector {
                     continue
                 }
                 is ParseResult.Msg -> {
+                    if (rect.top < minTop - 12) {
+                        log("[分割线] 第一条候选跨过分割线，等待微调 (i=$i, rect=$rect, minTop=$minTop)")
+                        return null
+                    }
+                    val gap = rect.top - minTop
+                    if (gap > maxFirstRowGap) {
+                        log("[分割线] 首个可解析消息离分割线过远，拒绝跳到后续消息 (i=$i, gap=$gap, max=$maxFirstRowGap, rect=$rect)")
+                        return null
+                    }
                     // v2.4.10: 仅对 card 类型(小程序/链接/文件等)做完整可见性检查
                     // 文字气泡(text/link)和图片(image)直接长按即可,不需要完全可见
                     if (parsed.message.type == "card") {
@@ -339,6 +363,11 @@ object MessageCollector {
                         }
                     }
                     val bubbleRect = pickBubbleRectBelow(child, minTop)
+                    if (bubbleRect.top < minTop - 8) {
+                        log("[分割线] 气泡长按区域跨过分割线，等待微调 (i=$i, bubble=$bubbleRect, minTop=$minTop)")
+                        return null
+                    }
+                    log("[分割线] 接受第一条候选 i=$i rect=$rect bubble=$bubbleRect type=${parsed.message.type}")
                     return FirstNewMessageInfo(parsed.message, node = child, rect = bubbleRect)
                 }
             }
