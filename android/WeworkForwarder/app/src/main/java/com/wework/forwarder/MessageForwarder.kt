@@ -286,11 +286,41 @@ object MessageForwarder {
      *   ↑ 选择到这里 — 向下选（我们需要这个：从第一条新消息选到最底部）
      *   ↓ 选择到这里 — 向上选（不要点这个，会选中旧消息）
      *
-     * 到底信号：屏幕最后一条消息内容 + ListView childCount 连续 2 轮均不变。
+     * 到底信号：列表签名 + 最后一个 child bottom + childCount 连续稳定。
+     * needScroll=true 时必须先观察到列表内容发生过移动，避免手势未生效/控件树未刷新时误判到底。
      * 不再用"按钮 y 位置"判断，因为按钮位置取决于多选锚点，与列表是否到底无关。
-     * 按钮被滑出屏幕时（滑过头），swipeUp 1 次恢复。
      */
     private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics, needScroll: Boolean = false): Boolean {
+        fun findChatList(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            return root?.let {
+                NodeFinder.findByClassName(it, "android.widget.ListView")
+                    ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
+            }
+        }
+
+        fun lastChildBottom(chatList: AccessibilityNodeInfo?): Int {
+            if (chatList == null || chatList.childCount <= 0) return 0
+            val lastChild = chatList.getChild(chatList.childCount - 1) ?: return 0
+            val rect = Rect()
+            lastChild.getBoundsInScreen(rect)
+            return rect.bottom
+        }
+
+        fun buildListSignature(chatList: AccessibilityNodeInfo?): String {
+            chatList ?: return ""
+            return (0 until chatList.childCount).joinToString("|") { idx ->
+                val child = chatList.getChild(idx) ?: return@joinToString "$idx:null"
+                val rect = Rect()
+                child.getBoundsInScreen(rect)
+                val texts = NodeFinder.getAllTexts(child)
+                    .map { it.text.trim() }
+                    .filter { it.isNotEmpty() }
+                    .take(3)
+                    .joinToString("/")
+                "$idx:${rect.top},${rect.bottom}:$texts"
+            }
+        }
+
         if (!needScroll) {
             // 快速尝试: 消息全在屏幕内时,底部按钮已可见,不需要滑动
             GestureHelper.delay(300)
@@ -307,8 +337,11 @@ object MessageForwarder {
             }
         }
 
-        var lastBottom = -1
-        var lastChildCount = -1
+        val initialList = findChatList(service.getRootNode())
+        var lastSignature = buildListSignature(initialList)
+        var lastBottom = lastChildBottom(initialList)
+        var lastChildCount = initialList?.childCount ?: -1
+        var observedMovement = !needScroll
         var stableCount = 0
 
         for (i in 0 until 20) {
@@ -316,36 +349,35 @@ object MessageForwarder {
 
             GestureHelper.swipeDown(service, metrics)
 
-            val root = service.getRootNode()
-            val chatList = root?.let {
-                NodeFinder.findByClassName(it, "android.widget.ListView")
-                    ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
-            }
+            val chatList = findChatList(service.getRootNode())
             val curChildCount = chatList?.childCount ?: 0
-
-            // v2.4.0: 用最后一个 child 的 bounds.bottom 判断到底,不再依赖 OCR
-            val curBottom = if (chatList != null && curChildCount > 0) {
-                val lastChild = chatList.getChild(curChildCount - 1)
-                val r = Rect()
-                lastChild?.getBoundsInScreen(r)
-                r.bottom
-            } else 0
-
-            var btn = findSelectToHereDown(service)
-            if (btn == null) {
-                log("[转发] 按钮不可见，swipeUp 1次恢复")
-                GestureHelper.swipeUp(service, metrics)
-                btn = findSelectToHereDown(service)
+            val curBottom = lastChildBottom(chatList)
+            val curSignature = buildListSignature(chatList)
+            val moved = lastSignature.isNotEmpty()
+                    && curSignature.isNotEmpty()
+                    && curSignature != lastSignature
+            if (moved) {
+                observedMovement = true
             }
 
             val stable = curBottom > 0
                     && curBottom == lastBottom
                     && curChildCount == lastChildCount
-            if (stable) {
+                    && curSignature.isNotEmpty()
+                    && curSignature == lastSignature
+            val btn = findSelectToHereDown(service)
+            val btnY = btn?.let {
+                val rect = Rect()
+                it.getBoundsInScreen(rect)
+                rect.centerY()
+            } ?: -1
+            log("[转发] scrollSelect i=${i + 1} moved=$moved observed=$observedMovement stable=$stable stableCount=$stableCount bottom=$curBottom count=$curChildCount btnY=$btnY")
+
+            if (stable && observedMovement) {
                 stableCount++
                 log("[转发] 列表稳定第 ${stableCount} 轮 (bottom=$curBottom, count=$curChildCount)")
-                if (stableCount >= 2) {
-                    val finalBtn = btn ?: findSelectToHereDown(service, strict = false)
+                if (stableCount >= 3) {
+                    val finalBtn = findSelectToHereDown(service, strict = false)
                     if (finalBtn != null) {
                         val r = Rect()
                         finalBtn.getBoundsInScreen(r)
@@ -354,30 +386,22 @@ object MessageForwarder {
                         GestureHelper.delay(1000)
                         return true
                     }
+                    log("[转发] 已确认到底但找不到'选择到这里'按钮")
+                    return false
                 }
             } else {
                 stableCount = 0
             }
+            if (!stable && moved) {
+                stableCount = 0
+            }
             lastBottom = curBottom
             lastChildCount = curChildCount
+            lastSignature = curSignature
         }
 
-        // 兜底：20 轮后最后一次尝试 (v1.9.4: 都用 strict=false,远超到底门槛)
-        val btn = findSelectToHereDown(service, strict = false) ?: run {
-            // 兜底再 swipeUp 一次找按钮
-            GestureHelper.swipeUp(service, metrics)
-            findSelectToHereDown(service, strict = false)
-        }
-        if (btn != null) {
-            val rect = Rect()
-            btn.getBoundsInScreen(rect)
-            log("[转发] 兜底点击'选择到这里' y=${rect.centerY()}")
-            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-            GestureHelper.delay(1000)
-            return true
-        }
-        log("[转发] 未找到'选择到这里'，可能只有一条新消息")
-        return true
+        log("[转发] 未确认到底，拒绝点击'选择到这里'")
+        return false
     }
 
     /**
