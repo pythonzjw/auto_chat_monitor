@@ -271,18 +271,23 @@ object MessageCollector {
         maxScrolls: Int = 0,
     ): FirstNewMessageInfo? {
         val dividerText = "以下为新消息"
-        fun smallStepTowardOlder() {
+        fun stepTowardOlder(fast: Boolean) {
             val w = metrics.widthPixels.toFloat()
             val h = metrics.heightPixels.toFloat()
-            service.swipe(w / 2, h * 0.47f, w / 2, h * 0.53f, duration = 520)
-            GestureHelper.delayExact(500)
+            if (fast) {
+                service.swipe(w / 2, h * 0.44f, w / 2, h * 0.56f, duration = 560)
+                GestureHelper.delayExact(320)
+            } else {
+                service.swipe(w / 2, h * 0.475f, w / 2, h * 0.525f, duration = 500)
+                GestureHelper.delayExact(360)
+            }
         }
 
         fun tinyStepTowardNewer() {
             val w = metrics.widthPixels.toFloat()
             val h = metrics.heightPixels.toFloat()
             service.swipe(w / 2, h * 0.505f, w / 2, h * 0.485f, duration = 480)
-            GestureHelper.delayExact(500)
+            GestureHelper.delayExact(360)
         }
 
         repeat(maxScrolls + 1) { iter ->
@@ -300,12 +305,13 @@ object MessageCollector {
                 // v2.4.11: 守卫 — 分割线节点存在但 bounds 在 ListView 顶部之上(常见于负坐标)时,
                 // 视为"还没滚到位",继续 swipeUp,不接受当前屏幕上方那条作为锚点
                 if (dRect.bottom <= listRect.top + 50) {
-                    log("[分割线] 节点存在但在可视区上方 (dRect.bottom=${dRect.bottom}, listTop=${listRect.top}), 慢速小步上翻找分割线")
+                    val farAbove = dRect.bottom < listRect.top - 260
+                    log("[分割线] 节点存在但在可视区上方 (dRect.bottom=${dRect.bottom}, listTop=${listRect.top}), ${if (farAbove) "中步" else "小步"}上翻找分割线")
                     if (iter == maxScrolls) {
                         log("[分割线] $maxScrolls 次 swipeUp 仍未把分割线滚进可视区, 走 ListView 兜底")
                         return null
                     }
-                    smallStepTowardOlder()
+                    stepTowardOlder(farAbove)
                     return@repeat
                 }
                 val firstNew = findFirstBubbleBelow(chatList, dRect.bottom, service)
@@ -326,7 +332,7 @@ object MessageCollector {
                 log("[分割线] $maxScrolls 次 swipeUp 仍未命中, 走 ListView 兜底")
                 return null
             }
-            smallStepTowardOlder()
+            stepTowardOlder(fast = iter < 6)
         }
         return null
     }
