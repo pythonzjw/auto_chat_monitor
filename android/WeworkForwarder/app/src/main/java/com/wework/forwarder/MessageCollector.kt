@@ -20,6 +20,12 @@ import android.view.accessibility.AccessibilityNodeInfo
 object MessageCollector {
     private const val TAG = "Collector"
 
+    private data class MessageRowInfo(
+        val message: Storage.Message,
+        val node: AccessibilityNodeInfo,
+        val key: String,
+    )
+
     private fun log(msg: String) {
         Log.d(TAG, msg)
         Config.uiLog?.invoke(msg)
@@ -173,6 +179,75 @@ object MessageCollector {
 
         log("[采集] 倒数第 $k 条 (屏下${messagesBelowScreen}条, 屏内倒数第${kInScreen}条) = 第 ${targetIdx + 1}/${messages.size}: ${targetMsg.sender}: ${targetMsg.content.take(30)}")
         return FirstNewMessageInfo(targetMsg, node = targetNode, rect = null)
+    }
+
+    /**
+     * 无分割线兜底：按 ListView 中的消息行倒数第 K 条定位。
+     *
+     * 与 getNthFromBottomMessage 不同，这里把小程序/图片/卡片等解析失败但明显是消息的行也计数，
+     * 避免因为 parseListItem Skip 导致倒数位置偏移。
+     */
+    fun getNthFromBottomMessageRow(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        k: Int,
+    ): FirstNewMessageInfo? {
+        if (k < 1) return null
+        val root = service.getRootNode() ?: run {
+            log("[K计数] 控件树为空,无法取倒数第 $k 条")
+            return null
+        }
+        val screenWidth = metrics.widthPixels
+        var rows = collectMessageRowsWithNodes(root, screenWidth)
+        log("[K计数] 当前屏消息行 ${rows.size} 条 (需要 k=$k)")
+        if (rows.isEmpty()) return null
+        if (rows.size >= k) {
+            val target = rows[rows.size - k]
+            log("[K计数] 屏内足够, 倒数第 $k 条 = 第 ${rows.size - k + 1}/${rows.size}: ${target.message.content.take(30)}")
+            return FirstNewMessageInfo(target.message, node = target.node, rect = null)
+        }
+
+        fun keyOf(row: MessageRowInfo) = row.key
+        var prevList = rows.map { keyOf(it) }
+        var rowsBelowScreen = 0
+        var totalSeen = rows.size
+        var swipeUps = 0
+        var consecutiveNoNew = 0
+
+        while (totalSeen < k && swipeUps < 18 && consecutiveNoNew < 3) {
+            if (!CollectorService.isRunning) return null
+            GestureHelper.swipeUp(service, metrics)
+            GestureHelper.delay(400)
+
+            val newRoot = service.getRootNode() ?: break
+            rows = collectMessageRowsWithNodes(newRoot, screenWidth)
+            swipeUps++
+            val currList = rows.map { keyOf(it) }
+
+            var overlap = 0
+            val maxOverlap = minOf(prevList.size, currList.size)
+            for (len in maxOverlap downTo 1) {
+                if (prevList.subList(0, len) == currList.subList(currList.size - len, currList.size)) {
+                    overlap = len
+                    break
+                }
+            }
+            val belowThisRound = prevList.size - overlap
+            rowsBelowScreen += belowThisRound
+            val newCount = currList.size - overlap
+            totalSeen += newCount
+            consecutiveNoNew = if (newCount > 0) 0 else consecutiveNoNew + 1
+            prevList = currList
+
+            log("[K计数] swipeUp 第 $swipeUps 轮, 屏幕 ${rows.size} 行, 新增 $newCount, 累计 $totalSeen/$k, 屏下 $rowsBelowScreen (overlap=$overlap)")
+        }
+
+        if (rows.isEmpty()) return null
+        val kInScreen = (k - rowsBelowScreen).coerceIn(1, rows.size)
+        val targetIdx = rows.size - kInScreen
+        val target = rows[targetIdx]
+        log("[K计数] 倒数第 $k 条 (屏下${rowsBelowScreen}行, 屏内倒数第${kInScreen}行) = 第 ${targetIdx + 1}/${rows.size}: ${target.message.content.take(30)}")
+        return FirstNewMessageInfo(target.message, node = target.node, rect = null)
     }
 
     /**
@@ -617,6 +692,125 @@ object MessageCollector {
         }
         log("[策略1] 解析结果: ${messages.size}条消息, ${timeCount}个时间, ${skipCount}个跳过, ${clipCount}个截断跳过")
         return Pair(messages, nodes)
+    }
+
+    private fun collectMessageRowsWithNodes(
+        root: AccessibilityNodeInfo,
+        screenWidth: Int,
+    ): List<MessageRowInfo> {
+        val rows = mutableListOf<MessageRowInfo>()
+        val halfWidth = screenWidth / 2
+        val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+            ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+        if (chatList == null) {
+            log("[K计数] 找不到 ListView，无法按消息行计数")
+            return rows
+        }
+
+        val listRect = Rect()
+        chatList.getBoundsInScreen(listRect)
+        var currentTime = ""
+        var skipCount = 0
+        var fallbackCount = 0
+        for (i in 0 until chatList.childCount) {
+            val child = chatList.getChild(i) ?: continue
+            val rect = Rect()
+            child.getBoundsInScreen(rect)
+            val visibleTop = maxOf(rect.top, listRect.top)
+            val visibleBottom = minOf(rect.bottom, listRect.bottom)
+            val visibleHeight = maxOf(0, visibleBottom - visibleTop)
+            if (rect.height() > 0 && visibleHeight * 2 < rect.height()) {
+                skipCount++
+                continue
+            }
+
+            when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
+                is ParseResult.TimeLabel -> currentTime = parsed.time
+                is ParseResult.Msg -> {
+                    rows.add(MessageRowInfo(parsed.message, child, rowKey(parsed.message, child, "parsed")))
+                }
+                is ParseResult.Skip -> {
+                    if (isLikelyMessageRowForCount(child, screenWidth)) {
+                        val msg = buildFallbackMessage(child, currentTime)
+                        rows.add(MessageRowInfo(msg, child, rowKey(msg, child, "fallback")))
+                        fallbackCount++
+                    } else {
+                        skipCount++
+                    }
+                }
+            }
+        }
+        log("[K计数] 行解析结果: ${rows.size}行, fallback=$fallbackCount, skip=$skipCount")
+        return rows
+    }
+
+    private fun rowKey(message: Storage.Message, node: AccessibilityNodeInfo, prefix: String): String {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        return "$prefix|${message.sender}|${message.type}|${message.content.take(40)}|h=${rect.height()}"
+    }
+
+    private fun buildFallbackMessage(node: AccessibilityNodeInfo, currentTime: String): Storage.Message {
+        val summary = textSummary(node).ifBlank { "[未解析消息]" }
+        val type = when {
+            findCardLabel(node) != null -> "card"
+            findLargeImage(node, 120) -> "image"
+            else -> "unknown"
+        }
+        return Storage.Message(
+            sender = "群成员",
+            time = currentTime,
+            content = summary,
+            type = type,
+        )
+    }
+
+    private fun isLikelyMessageRowForCount(node: AccessibilityNodeInfo, screenWidth: Int): Boolean {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (rect.height() < 50) return false
+
+        val allTexts = NodeFinder.getAllTexts(node)
+        val contentTexts = allTexts.map { it.text.trim() }.filter { it.isNotEmpty() }
+        val hasOnlyNonMessageText = contentTexts.isNotEmpty() && contentTexts.all {
+            isTimeLabel(it) || isSystemMessage(it) || it.contains("新消息") || isUiElement(it)
+        }
+        if (hasOnlyNonMessageText) return false
+
+        val avatarMin = (screenWidth * 0.018).toInt()
+        val avatarMax = (screenWidth * 0.14).toInt()
+        val hasAvatarPlaceholder = allTexts.any {
+            it.text.trim().isEmpty()
+                    && it.bounds.width() in avatarMin..avatarMax
+                    && it.bounds.height() in avatarMin..avatarMax
+        }
+        val hasLeftAvatar = findLeftAvatarImage(node, screenWidth) != null
+        val hasBubbleCandidate = NodeFinder.findAll(node) {
+            it.isClickable
+                    && it != node
+                    && it.className?.toString() != "android.widget.ImageView"
+        }.any {
+            val r = Rect()
+            it.getBoundsInScreen(r)
+            r.width() >= 80 && r.height() >= 30
+        }
+        val hasVisualMessage = findCardLabel(node) != null || findLargeImage(node, 120)
+        val hasMessageText = contentTexts.any {
+            !isTimeLabel(it) && !isSystemMessage(it) && !it.contains("新消息") && !isUiElement(it)
+        }
+        return hasAvatarPlaceholder
+                || hasLeftAvatar
+                || hasBubbleCandidate
+                || hasVisualMessage
+                || (node.isClickable && hasMessageText && rect.height() >= 60)
+    }
+
+    private fun textSummary(node: AccessibilityNodeInfo): String {
+        return NodeFinder.getAllTexts(node)
+            .map { it.text.trim() }
+            .filter { it.isNotEmpty() && !isTimeLabel(it) && !isSystemMessage(it) && !isUiElement(it) }
+            .take(4)
+            .joinToString("/")
     }
 
     /**

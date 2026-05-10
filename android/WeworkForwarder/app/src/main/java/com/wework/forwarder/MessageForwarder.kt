@@ -51,16 +51,30 @@ object MessageForwarder {
         }
         val isSingleMessage = k == 1
 
-        // v2.4.0: 先数当前屏幕消息,够则直接选;不够走分割线(消息超屏企微必渲染分割线)
+        // 先用未读数 K 定位锚点；分割线只是辅助信号，不再作为唯一兜底。
         log("[转发] 步骤1: 数当前屏幕消息...")
         var anchor = MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
         var usedDivider = false
+        var anchorSource = "当前屏幕倒数"
         if (anchor != null) {
             log("[转发] 屏幕消息 >= $k, 直接定位锚点")
         } else {
             log("[转发] 屏幕消息 < $k, 上滑找分割线...")
             anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 30)
-            usedDivider = anchor != null
+            if (anchor != null) {
+                usedDivider = true
+                anchorSource = "分割线辅助"
+            } else {
+                log("[转发] 分割线不存在或找不到, 回到底部走 K 计数兜底 (K=$k)...")
+                scrollToBottom(service, metrics)
+                if (stopped()) return false
+                GestureHelper.delay(500)
+                anchor = MessageCollector.getNthFromBottomMessageRow(service, metrics, k)
+                if (anchor != null) {
+                    usedDivider = true
+                    anchorSource = "K计数"
+                }
+            }
         }
         if (anchor == null) {
             log("[转发] ✗ 所有路径均失败")
@@ -69,6 +83,7 @@ object MessageForwarder {
         }
         if (stopped()) return false
         val firstNewMsg = anchor.message
+        log("[转发] 锚点来源: $anchorSource")
         log("[转发] 锚点: ${firstNewMsg.sender}: ${firstNewMsg.content.take(30)}")
 
         // 分批转发
