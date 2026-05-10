@@ -191,6 +191,7 @@ object MessageCollector {
         service: WeWorkAccessibilityService,
         metrics: DisplayMetrics,
         k: Int,
+        maxSwipeUps: Int = 18,
     ): FirstNewMessageInfo? {
         if (k < 1) return null
         val root = service.getRootNode() ?: run {
@@ -204,7 +205,7 @@ object MessageCollector {
         if (rows.size >= k) {
             val target = rows[rows.size - k]
             log("[K计数] 屏内足够, 倒数第 $k 条 = 第 ${rows.size - k + 1}/${rows.size}: ${target.message.content.take(30)}")
-            return FirstNewMessageInfo(target.message, node = target.node, rect = null)
+            return FirstNewMessageInfo(target.message, node = target.node, rect = null, scrolled = false)
         }
 
         fun keyOf(row: MessageRowInfo) = row.key
@@ -214,7 +215,7 @@ object MessageCollector {
         var swipeUps = 0
         var consecutiveNoNew = 0
 
-        while (totalSeen < k && swipeUps < 18 && consecutiveNoNew < 3) {
+        while (totalSeen < k && swipeUps < maxSwipeUps && consecutiveNoNew < 3) {
             if (!CollectorService.isRunning) return null
             GestureHelper.swipeUp(service, metrics)
             GestureHelper.delay(400)
@@ -242,12 +243,16 @@ object MessageCollector {
             log("[K计数] swipeUp 第 $swipeUps 轮, 屏幕 ${rows.size} 行, 新增 $newCount, 累计 $totalSeen/$k, 屏下 $rowsBelowScreen (overlap=$overlap)")
         }
 
+        if (totalSeen < k) {
+            log("[K计数] 累计不足 $k 行, 仅看到 $totalSeen 行, 放弃锚点")
+            return null
+        }
         if (rows.isEmpty()) return null
         val kInScreen = (k - rowsBelowScreen).coerceIn(1, rows.size)
         val targetIdx = rows.size - kInScreen
         val target = rows[targetIdx]
         log("[K计数] 倒数第 $k 条 (屏下${rowsBelowScreen}行, 屏内倒数第${kInScreen}行) = 第 ${targetIdx + 1}/${rows.size}: ${target.message.content.take(30)}")
-        return FirstNewMessageInfo(target.message, node = target.node, rect = null)
+        return FirstNewMessageInfo(target.message, node = target.node, rect = null, scrolled = swipeUps > 0)
     }
 
     /**
@@ -1196,6 +1201,7 @@ object MessageCollector {
         val message: Storage.Message,
         val node: AccessibilityNodeInfo?,
         val rect: Rect? = null,
+        val scrolled: Boolean = false,
     )
 
     private sealed class ParseResult {

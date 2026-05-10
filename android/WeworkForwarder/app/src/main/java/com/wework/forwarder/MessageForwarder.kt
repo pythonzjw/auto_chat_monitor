@@ -51,7 +51,7 @@ object MessageForwarder {
         }
         val isSingleMessage = k == 1
 
-        // 先用未读数 K 定位锚点；分割线只是辅助信号，不再作为唯一兜底。
+        // 先用未读数 K 定位锚点；分割线只是辅助信号，不再作为主路径。
         log("[转发] 步骤1: 数当前屏幕消息...")
         var anchor = MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
         var usedDivider = false
@@ -59,20 +59,17 @@ object MessageForwarder {
         if (anchor != null) {
             log("[转发] 屏幕消息 >= $k, 直接定位锚点")
         } else {
-            log("[转发] 屏幕消息 < $k, 上滑找分割线...")
-            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 30)
+            log("[转发] 屏幕消息 < $k, 先走就地 K 计数...")
+            anchor = MessageCollector.getNthFromBottomMessageRow(service, metrics, k, maxSwipeUps = 10)
             if (anchor != null) {
-                usedDivider = true
-                anchorSource = "分割线辅助"
+                usedDivider = anchor.scrolled
+                anchorSource = if (anchor.scrolled) "就地K计数" else "当前屏幕行计数"
             } else {
-                log("[转发] 分割线不存在或找不到, 回到底部走 K 计数兜底 (K=$k)...")
-                scrollToBottom(service, metrics)
-                if (stopped()) return false
-                GestureHelper.delay(500)
-                anchor = MessageCollector.getNthFromBottomMessageRow(service, metrics, k)
+                log("[转发] 就地 K 计数失败, 短路径找分割线...")
+                anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 8)
                 if (anchor != null) {
                     usedDivider = true
-                    anchorSource = "K计数"
+                    anchorSource = "分割线辅助"
                 }
             }
         }
@@ -269,14 +266,6 @@ object MessageForwarder {
             if (hasTopCancel && hasBottomForward) return true
         }
         return false
-    }
-
-    private fun scrollToBottom(service: WeWorkAccessibilityService, metrics: DisplayMetrics) {
-        // 滑动慢化后单次幅度 8%,需要更多轮才能到底
-        repeat(8) {
-            if (stopped()) return
-            GestureHelper.swipeDown(service, metrics)
-        }
     }
 
     /**
