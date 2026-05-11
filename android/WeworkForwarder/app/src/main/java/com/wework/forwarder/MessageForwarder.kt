@@ -51,7 +51,7 @@ object MessageForwarder {
         }
         val isSingleMessage = k == 1
 
-        // 先用未读数 K 定位锚点；分割线优先，K 计数只作为兜底。
+        // 先用未读数 K 定位锚点；超屏只信分割线，找不到就失败。
         log("[转发] 步骤1: 数当前屏幕消息...")
         var anchor = MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
         var usedDivider = false
@@ -65,15 +65,7 @@ object MessageForwarder {
                 usedDivider = true
                 anchorSource = "分割线辅助"
             } else {
-                log("[转发] 分割线找不到, 快速回到底部走 K 计数兜底 (K=$k)...")
-                scrollToBottomForKFallback(service, metrics)
-                if (stopped()) return false
-                GestureHelper.delay(300)
-                anchor = MessageCollector.getNthFromBottomMessageRow(service, metrics, k)
-                if (anchor != null) {
-                    usedDivider = anchor.scrolled
-                    anchorSource = "K计数兜底"
-                }
+                log("[转发] 分割线未找到，拒绝使用 K 计数兜底")
             }
         }
         if (anchor == null) {
@@ -188,16 +180,6 @@ object MessageForwarder {
     }
 
     // ===== 内部方法 =====
-
-    private fun scrollToBottomForKFallback(service: WeWorkAccessibilityService, metrics: DisplayMetrics) {
-        repeat(6) {
-            if (stopped()) return
-            val w = metrics.widthPixels.toFloat()
-            val h = metrics.heightPixels.toFloat()
-            service.swipe(w / 2, h * 0.58f, w / 2, h * 0.38f, duration = 620)
-            GestureHelper.delayExact(250)
-        }
-    }
 
     private fun isSafeLongPressRect(rect: Rect, metrics: DisplayMetrics): Boolean {
         val topSafe = (metrics.heightPixels * 0.18f).toInt()

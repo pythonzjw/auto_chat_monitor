@@ -271,6 +271,21 @@ object MessageCollector {
         maxScrolls: Int = 0,
     ): FirstNewMessageInfo? {
         val dividerText = "以下为新消息"
+        fun listSignature(node: AccessibilityNodeInfo?): String {
+            node ?: return ""
+            return (0 until node.childCount).joinToString("|") { idx ->
+                val child = node.getChild(idx) ?: return@joinToString "$idx:null"
+                val rect = Rect()
+                child.getBoundsInScreen(rect)
+                val texts = NodeFinder.getAllTexts(child)
+                    .map { it.text.trim() }
+                    .filter { it.isNotEmpty() }
+                    .take(3)
+                    .joinToString("/")
+                "$idx:${rect.top},${rect.bottom}:$texts"
+            }
+        }
+
         fun stepTowardOlder(fast: Boolean) {
             val w = metrics.widthPixels.toFloat()
             val h = metrics.heightPixels.toFloat()
@@ -290,25 +305,47 @@ object MessageCollector {
             GestureHelper.delayExact(360)
         }
 
-        repeat(maxScrolls + 1) { iter ->
+        val maxIterations = if (maxScrolls > 0) maxScrolls else 40
+        var lastSignature = ""
+        var stableCount = 0
+        var lastDividerBottom: Int? = null
+        var stagnantDividerCount = 0
+
+        repeat(maxIterations + 1) { iter ->
             if (!CollectorService.isRunning) return null
             val root = service.getRootNode() ?: return null
             val divider = NodeFinder.findByText(root, dividerText)
                 ?: NodeFinder.findByTextContains(root, "新消息")  // 兼容 "X条新消息" 变体
             val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
                 ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+            val signature = listSignature(chatList)
+            if (signature.isNotEmpty() && signature == lastSignature) {
+                stableCount++
+            } else {
+                stableCount = 0
+            }
+            lastSignature = signature
+
             if (divider != null && chatList != null) {
                 val dRect = Rect()
                 divider.getBoundsInScreen(dRect)
                 val listRect = Rect()
                 chatList.getBoundsInScreen(listRect)
+                lastDividerBottom?.let { last ->
+                    stagnantDividerCount = if (kotlin.math.abs(dRect.bottom - last) <= 8) {
+                        stagnantDividerCount + 1
+                    } else {
+                        0
+                    }
+                }
+                lastDividerBottom = dRect.bottom
                 // v2.4.11: 守卫 — 分割线节点存在但 bounds 在 ListView 顶部之上(常见于负坐标)时,
                 // 视为"还没滚到位",继续 swipeUp,不接受当前屏幕上方那条作为锚点
                 if (dRect.bottom <= listRect.top + 50) {
                     val farAbove = dRect.bottom < listRect.top - 260
                     log("[分割线] 节点存在但在可视区上方 (dRect.bottom=${dRect.bottom}, listTop=${listRect.top}), ${if (farAbove) "中步" else "小步"}上翻找分割线")
-                    if (iter == maxScrolls) {
-                        log("[分割线] $maxScrolls 次 swipeUp 仍未把分割线滚进可视区, 走 ListView 兜底")
+                    if (stableCount >= 3 || stagnantDividerCount >= 4 || iter == maxIterations) {
+                        log("[分割线] 动态扫描无进展，拒绝转发 (iter=$iter, stable=$stableCount, stagnant=$stagnantDividerCount)")
                         return null
                     }
                     stepTowardOlder(farAbove)
@@ -328,8 +365,8 @@ object MessageCollector {
                 log("[分割线] 命中分割线但找不到 ListView")
                 return null
             }
-            if (iter == maxScrolls) {
-                log("[分割线] $maxScrolls 次 swipeUp 仍未命中, 走 ListView 兜底")
+            if (stableCount >= 3 || iter == maxIterations) {
+                log("[分割线] 动态扫描未命中且列表无进展，拒绝转发 (iter=$iter, stable=$stableCount)")
                 return null
             }
             stepTowardOlder(fast = iter < 6)
