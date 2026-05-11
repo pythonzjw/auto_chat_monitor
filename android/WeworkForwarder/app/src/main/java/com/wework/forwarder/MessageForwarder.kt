@@ -349,6 +349,14 @@ object MessageForwarder {
         var lastChildCount = initialList?.childCount ?: -1
         var observedMovement = !needScroll
         var stableCount = 0
+        var lastTrustedSelectRect: Rect? = null
+
+        fun clickSelectRect(rect: Rect, reason: String): Boolean {
+            log("[转发] $reason，点击'选择到这里' y=${rect.centerY()}")
+            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+            GestureHelper.delay(1000)
+            return true
+        }
 
         for (i in 0 until 20) {
             if (stopped()) return false
@@ -375,6 +383,9 @@ object MessageForwarder {
             val btnY = btn?.let {
                 val rect = Rect()
                 it.getBoundsInScreen(rect)
+                if (rect.centerY() > metrics.heightPixels / 2) {
+                    lastTrustedSelectRect = Rect(rect)
+                }
                 rect.centerY()
             } ?: -1
             log("[转发] scrollSelect i=${i + 1} moved=$moved observed=$observedMovement stable=$stable stableCount=$stableCount bottom=$curBottom count=$curChildCount btnY=$btnY")
@@ -387,12 +398,20 @@ object MessageForwarder {
                     if (finalBtn != null) {
                         val r = Rect()
                         finalBtn.getBoundsInScreen(r)
-                        log("[转发] 到底了，点击'选择到这里' y=${r.centerY()}")
-                        service.clickAt(r.centerX().toFloat(), r.centerY().toFloat())
-                        GestureHelper.delay(1000)
-                        return true
+                        return clickSelectRect(r, "到底了")
                     }
-                    log("[转发] 已确认到底但找不到'选择到这里'按钮")
+                    log("[转发] 已确认到底但找不到'选择到这里'按钮，swipeUp 小幅回拉后重试")
+                    GestureHelper.swipeUp(service, metrics)
+                    val retryBtn = findSelectToHereDown(service, strict = false)
+                    if (retryBtn != null) {
+                        val r = Rect()
+                        retryBtn.getBoundsInScreen(r)
+                        return clickSelectRect(r, "回拉后找到按钮")
+                    }
+                    lastTrustedSelectRect?.let {
+                        return clickSelectRect(it, "回拉后仍未找到按钮，使用最后可信坐标")
+                    }
+                    log("[转发] 已确认到底但无可用'选择到这里'按钮")
                     return false
                 }
             } else {
