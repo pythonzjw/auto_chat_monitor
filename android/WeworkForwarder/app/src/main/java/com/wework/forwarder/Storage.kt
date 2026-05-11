@@ -16,6 +16,7 @@ import java.util.Locale
  */
 object Storage {
     private const val TAG = "Storage"
+    private const val FORWARD_STATE_FILE = "forward_state.json"
     private val gson = Gson()
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA)
 
@@ -58,6 +59,18 @@ object Storage {
         msgs.forEach { it.collectTime = time }
         messages.addAll(msgs)
         saveFile(Config.MESSAGE_FILE, messages)
+    }
+
+    // ===== 转发状态 =====
+
+    fun loadLastForwardSuccessAt(): Long? {
+        return loadFile<ForwardState>(FORWARD_STATE_FILE)
+            ?.lastForwardSuccessAt
+            ?.takeIf { it > 0L }
+    }
+
+    fun saveForwardSuccessAt(timestamp: Long = System.currentTimeMillis()) {
+        saveFile(FORWARD_STATE_FILE, ForwardState(lastForwardSuccessAt = timestamp))
     }
 
     // ===== 用户配置 =====
@@ -205,6 +218,10 @@ object Storage {
         val targetGroups: List<String>? = null,
         val lookbackMinutes: Int? = null,
         val pollIntervalSeconds: Int? = null
+    )
+
+    data class ForwardState(
+        val lastForwardSuccessAt: Long = 0L
     )
 
     // ===== 云端授权缓存 =====

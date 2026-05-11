@@ -19,6 +19,7 @@ import android.view.accessibility.AccessibilityNodeInfo
  */
 object MessageCollector {
     private const val TAG = "Collector"
+    private const val TIME_BOUNDARY_TOLERANCE_MS = 90_000L
 
     private data class MessageRowInfo(
         val message: Storage.Message,
@@ -372,6 +373,156 @@ object MessageCollector {
             stepTowardOlder(fast = iter < 6)
         }
         return null
+    }
+
+    /**
+     * 无分割线兜底：用企微时间行作为边界候选。
+     *
+     * 只接受晚于上次成功转发时间附近的时间行，避免重复消息文本造成误定位。
+     * 时间行不是绝对未读边界，找不到可解释的时间行时必须失败。
+     */
+    fun findFirstNewMessageByTimeBoundary(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        lastForwardSuccessAt: Long?,
+        maxScrolls: Int = 24,
+    ): FirstNewMessageInfo? {
+        val baseline = lastForwardSuccessAt ?: run {
+            log("[时间行] 无上次成功转发时间，拒绝使用时间行兜底")
+            return null
+        }
+        val cutoff = baseline - TIME_BOUNDARY_TOLERANCE_MS
+        log("[时间行] 回到底部后按时间行扫描，基准=${baseline}, cutoff=${cutoff}")
+        scrollToLatestForTimeBoundary(service, metrics)
+
+        repeat(maxScrolls + 1) { iter ->
+            if (!CollectorService.isRunning) return null
+            val root = service.getRootNode() ?: return null
+            val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+                ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+            if (chatList == null) {
+                log("[时间行] 找不到 ListView，无法扫描时间边界")
+                return null
+            }
+
+            val anchor = findAnchorBelowAcceptableTime(chatList, service, cutoff)
+            if (anchor != null) return anchor
+
+            if (iter == maxScrolls) {
+                log("[时间行] $maxScrolls 次上翻仍未找到可用时间行")
+                return null
+            }
+            stepTowardOlderForTimeBoundary(service, metrics)
+        }
+        return null
+    }
+
+    private fun scrollToLatestForTimeBoundary(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        maxSwipes: Int = 8,
+    ) {
+        var lastSignature = ""
+        var stableCount = 0
+        repeat(maxSwipes) { iter ->
+            if (!CollectorService.isRunning) return
+            val chatList = service.getRootNode()?.let {
+                NodeFinder.findByClassName(it, "android.widget.ListView")
+                    ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
+            }
+            val signature = listSignature(chatList)
+            if (signature.isNotEmpty() && signature == lastSignature) {
+                stableCount++
+                if (stableCount >= 2) {
+                    log("[时间行] 已回到最新位置 (iter=$iter)")
+                    return
+                }
+            } else {
+                stableCount = 0
+            }
+            lastSignature = signature
+            stepTowardNewerForTimeBoundary(service, metrics)
+        }
+        log("[时间行] 回到底部达到上限，继续尝试扫描")
+    }
+
+    private fun findAnchorBelowAcceptableTime(
+        chatList: AccessibilityNodeInfo,
+        service: WeWorkAccessibilityService,
+        cutoff: Long,
+    ): FirstNewMessageInfo? {
+        val screenWidth = service.resources.displayMetrics.widthPixels
+        val halfWidth = screenWidth / 2
+        val candidates = mutableListOf<Pair<String, Rect>>()
+        val now = System.currentTimeMillis()
+        var currentTime = ""
+
+        for (i in 0 until chatList.childCount) {
+            val child = chatList.getChild(i) ?: continue
+            val rect = Rect()
+            child.getBoundsInScreen(rect)
+            when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
+                is ParseResult.TimeLabel -> {
+                    currentTime = parsed.time
+                    val timeMillis = TimeParser.parseMessageTime(parsed.time)?.time
+                    if (timeMillis == null) {
+                        log("[时间行] 时间解析失败: ${parsed.time}")
+                    } else if (timeMillis < cutoff || timeMillis > now + 10 * 60 * 1000L) {
+                        log("[时间行] 跳过旧时间行: ${parsed.time} millis=$timeMillis cutoff=$cutoff")
+                    } else {
+                        log("[时间行] 命中候选时间行: ${parsed.time} rect=$rect")
+                        candidates.add(parsed.time to rect)
+                    }
+                }
+                is ParseResult.Msg -> Unit
+                is ParseResult.Skip -> Unit
+            }
+        }
+
+        for ((timeText, rect) in candidates.sortedByDescending { it.second.bottom }) {
+            val anchor = findFirstBubbleBelow(chatList, rect.bottom, service)
+            if (anchor != null) {
+                log("[时间行] 接受时间行 $timeText 下方锚点: ${anchor.message.sender}: ${anchor.message.content.take(30)}")
+                return anchor
+            }
+            log("[时间行] 时间行 $timeText 下方暂无稳定消息，继续扫描")
+        }
+        return null
+    }
+
+    private fun listSignature(chatList: AccessibilityNodeInfo?): String {
+        chatList ?: return ""
+        return (0 until chatList.childCount).joinToString("|") { idx ->
+            val child = chatList.getChild(idx) ?: return@joinToString "$idx:null"
+            val rect = Rect()
+            child.getBoundsInScreen(rect)
+            val texts = NodeFinder.getAllTexts(child)
+                .map { it.text.trim() }
+                .filter { it.isNotEmpty() }
+                .take(3)
+                .joinToString("/")
+            "$idx:${rect.top},${rect.bottom}:$texts"
+        }
+    }
+
+    private fun stepTowardOlderForTimeBoundary(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+    ) {
+        val w = metrics.widthPixels.toFloat()
+        val h = metrics.heightPixels.toFloat()
+        service.swipe(w / 2, h * 0.44f, w / 2, h * 0.56f, duration = 540)
+        GestureHelper.delayExact(360)
+    }
+
+    private fun stepTowardNewerForTimeBoundary(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+    ) {
+        val w = metrics.widthPixels.toFloat()
+        val h = metrics.heightPixels.toFloat()
+        service.swipe(w / 2, h * 0.56f, w / 2, h * 0.44f, duration = 540)
+        GestureHelper.delayExact(360)
     }
 
     /**

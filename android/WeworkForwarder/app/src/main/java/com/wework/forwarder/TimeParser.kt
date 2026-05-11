@@ -32,6 +32,17 @@ object TimeParser {
             return cal.time
         }
 
+        // 格式: "上午 HH:mm" / "下午 HH:mm"
+        Regex("^(上午|下午)\\s*(\\d{1,2}):(\\d{2})$").matchEntire(text)?.let { m ->
+            val cal = today.clone() as Calendar
+            var hour = m.groupValues[2].toInt()
+            if (m.groupValues[1] == "下午" && hour < 12) hour += 12
+            if (m.groupValues[1] == "上午" && hour == 12) hour = 0
+            cal.set(Calendar.HOUR_OF_DAY, hour)
+            cal.set(Calendar.MINUTE, m.groupValues[3].toInt())
+            return cal.time
+        }
+
         // 格式: "昨天 HH:mm"
         Regex("^昨天\\s*(\\d{1,2}):(\\d{2})$").matchEntire(text)?.let { m ->
             val cal = today.clone() as Calendar

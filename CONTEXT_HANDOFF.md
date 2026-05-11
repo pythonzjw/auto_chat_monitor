@@ -1,51 +1,36 @@
 # CONTEXT_HANDOFF
 
 ## 当前目标
-- 移除 K 计数兜底：超屏时只信分割线，找不到分割线则失败并 dump。目标群选择和第二批复定位逻辑不动。
+- 提升无分割线场景的消息边界稳定性：屏幕内足够仍按倒数 K；超屏优先分割线；分割线缺失时用“时间行 + 上次成功转发时间”做保守兜底；不恢复跨屏 K 计数。
 
 ## 已完成
-- 在 `MessageCollector.kt` 的 `findFirstBubbleBelow()` 中增加疑似消息行判断。
-- 分割线下方第一条疑似消息解析失败时，不再继续跳到后续消息，而是返回 `null` 触发现有 `swipeDown` 重试。
-- 根据真机视频继续收窄：首个可解析消息离分割线过远时拒绝当锚点，并使用分割线阶段专用慢速小步滑动。
-- 新增无分割线兜底：屏幕不够且分割线找不到时，回到底部按 ListView 消息行倒数第 K 条定位。
-- 长按前增加危险区域保护：锚点太靠近顶部/底部时拒绝长按，避免选到旧消息或底栏。
-- 点击“多选”改为坐标点击 + 进入多选模式校验 + 最多重试 2 次；校验失败则终止本批并 dump，不再继续“选择到这里”滚动。
-- 放宽分割线锚点接受条件：不再因 ListView 整行 top 跨过分割线就拒绝，改为判断真实气泡中心和安全区域。
-- 多选校验收紧：不再用宽泛的 `取消 + 转发`，改为 `选择到这里` 或全屏多选页顶部取消 + 底部转发。
-- 扩选滚动到底判定改为列表签名 + bottom + childCount 连续稳定；`needScroll=true` 时必须先观察到列表发生过移动。
-- 删除未确认到底时的兜底点击，20 轮仍无法确认则失败并由上层 dump，避免提前点“选择到这里”。
-- 已推送稳定标记 `stable-v2.4.26`，指向当前可用提交 `v2.4.26`。
-- 当前屏不足 `k` 时不再先等 31 次分割线，改为就地消息行 K 计数优先；K 计数失败后才短路径找分割线。
-- K 计数累计不足 `k` 时不再强行返回锚点，直接失败，避免误选。
-- v2.4.27 就地 K 计数主路径会因 overlap 失败而过早累计到 `k`，已回退为分割线优先。
-- 分割线查找改为远距离中步、近距离小步，最大 18 轮；失败后快速回到底部走 K 计数兜底。
-- 已删除 K 计数兜底路径：当前屏不足 `k` 且分割线找不到时，直接失败，不再回到底部、不再 K 计数、不再长按。
-- 分割线扫描改为动态停止：列表签名连续稳定、分割线位置停滞或达到安全最大循环时停止并失败。
+- 新增 `Storage.saveForwardSuccessAt()` / `loadLastForwardSuccessAt()`，仅保存最近一次全部目标群转发成功的时间戳。
+- `MessageForwarder` 接入时间行兜底：分割线找不到后，尝试用时间行定位锚点；失败则拒绝转发，不使用 K 计数兜底。
+- `MessageCollector` 新增时间行扫描：先回到底部，再向上找晚于上次成功时间附近的时间行，接受该时间行下方第一条稳定消息作为锚点。
+- `TimeParser` 补充 `上午/下午 HH:mm` 解析。
+- 选群逻辑、批次逻辑、第二批复定位逻辑未改。
 
 ## 已修改文件
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageCollector.kt`
 - `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageForwarder.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageCollector.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/Storage.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/TimeParser.kt`
 - `CONTEXT_HANDOFF.md`
 
 ## 关键决策
-- 冻结 `selectTargetGroups()`，不修改选群流程。
-- 不修改 `MessageForwarder.kt` 的批次、长按、多选、发送流程。
-- 当前修复优先避免漏选第一条未读，遇到疑似消息但解析失败时宁可微调重试。
-- 分割线搜索先降速确认逻辑正确性；不改全局 `GestureHelper`，避免影响选群。
-- 未读徽章 K 是主依据；分割线是辅助信号，不再作为唯一兜底。
-- “多选”未真正生效比漏转更危险，因为会继续扩选旧消息；因此当前策略是失败即停，不再带病执行。
-- 企微消息整行可能包含头像/昵称/空白，整行 top 在分割线上方不代表气泡不可长按；锚点应以气泡坐标为准。
-- 扩选阶段宁可失败也不能未到底就点“选择到这里”，否则会漏选新消息或选错范围。
-- 分割线是超屏唯一主路径；K 计数不再参与转发锚点定位，避免 overlap 误判导致错选。
+- 不再使用文本书签作为边界，避免重复消息误匹配。
+- 无分割线 fallback 只信时间行边界；时间行不是绝对未读边界，所以必须晚于上次成功转发时间附近才接受。
+- 第一轮没有成功时间时，无分割线且当前屏不足 K 会失败，避免把旧时间块当新消息。
+- K 只保留“当前屏足够时倒数第 K 条”的快速路径，不做跨屏累计。
 
-## 未完成事项
+## 验证情况
 - `git diff --check` 已通过。
-- 本地 Gradle 编译未完成，当前环境缺 Java Runtime：`Unable to locate a Java Runtime`。
-- 需要真机验证：少量未读无分割线、多条未读有分割线、连续小程序卡片三类场景。
+- 本地 `./gradlew assembleDebug` 未运行成功：当前机器缺 Java Runtime，报错 `Unable to locate a Java Runtime`。
+- 需要 CI 或装有 JDK 17 的环境验证编译。
 
 ## 下一步
-- 如需发布，提交 `MessageForwarder.kt`、`MessageCollector.kt` 和 `CONTEXT_HANDOFF.md`，排除未跟踪的 `1.jpg`。
-- 真机重点观察日志：`屏幕消息 < k, 上滑找分割线`、`中步/小步上翻找分割线`、`分割线未找到，拒绝使用 K 计数兜底`、`动态扫描无进展`。
+- 真机重点观察日志：`分割线未找到，尝试时间行边界兜底`、`[时间行] 命中候选时间行`、`[时间行] 接受时间行`、`时间行边界不可用`。
+- 验证三类场景：有分割线、多分钟后无分割线但有时间行、短间隔无时间行。
 
 ## 已知问题
 - CI 只能验证编译，不能证明企微无障碍 UI 行为正确。
