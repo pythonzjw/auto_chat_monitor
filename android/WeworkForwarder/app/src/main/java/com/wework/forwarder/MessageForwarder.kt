@@ -51,7 +51,7 @@ object MessageForwarder {
         }
         val isSingleMessage = k == 1
 
-        // 先用未读数 K 定位当前屏锚点；超屏优先信分割线，分割线缺失时再用时间行边界。
+        // 先用未读数 K 定位当前屏锚点；超屏则持续向上找分割线或时间行边界。
         log("[转发] 步骤1: 数当前屏幕消息...")
         var anchor = MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
         var usedDivider = false
@@ -59,24 +59,13 @@ object MessageForwarder {
         if (anchor != null) {
             log("[转发] 屏幕消息 >= $k, 直接定位锚点")
         } else {
-            log("[转发] 屏幕消息 < $k, 上滑找分割线...")
-            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics, maxScrolls = 18)
+            log("[转发] 屏幕消息 < $k, 持续上滑找分割线/时间行...")
+            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
             if (anchor != null) {
                 usedDivider = true
-                anchorSource = "分割线辅助"
+                anchorSource = "分割线/时间行辅助"
             } else {
-                log("[转发] 分割线未找到，尝试时间行边界兜底...")
-                anchor = MessageCollector.findFirstNewMessageByTimeBoundary(
-                    service,
-                    metrics,
-                    Storage.loadLastForwardSuccessAt(),
-                )
-                if (anchor != null) {
-                    usedDivider = true
-                    anchorSource = "时间行辅助"
-                } else {
-                    log("[转发] 时间行边界不可用，拒绝使用 K 计数兜底")
-                }
+                log("[转发] 分割线/时间行边界不可用，拒绝使用 K 计数兜底")
             }
         }
         if (anchor == null) {

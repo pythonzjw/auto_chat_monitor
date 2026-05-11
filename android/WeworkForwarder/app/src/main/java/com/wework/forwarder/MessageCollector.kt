@@ -19,7 +19,6 @@ import android.view.accessibility.AccessibilityNodeInfo
  */
 object MessageCollector {
     private const val TAG = "Collector"
-    private const val TIME_BOUNDARY_TOLERANCE_MS = 90_000L
 
     private data class MessageRowInfo(
         val message: Storage.Message,
@@ -257,35 +256,18 @@ object MessageCollector {
     }
 
     /**
-     * v2.2.0: 用 "以下为新消息" 分割线定位第一条未读消息
+     * 持续向上扫描边界：优先 "以下为新消息" 分割线，其次屏幕中部时间行。
      *
-     * 替代旧的"K 计数"主路径。
-     * 进入聊天时 WeWork 自动对齐到分割线, 所以调用前不要 scrollToBottom。
-     *
-     * v2.3.4: 进群时企微自动对齐到分割线,第 0 轮就该命中。
-     * 分割线不存在(消息没超屏)时滚多少次都找不到,不浪费时间。
-     * maxScrolls 默认 0: 只看当前屏幕,不主动 swipeUp。
+     * 不做跨屏 K 计数，也不回到底部重扫；未进入多选前只向上找边界。
+     * maxScrolls 参数仅保留兼容旧调用，不再作为正常扫描上限。
      */
+    @Suppress("UNUSED_PARAMETER")
     fun findFirstNewMessageByDivider(
         service: WeWorkAccessibilityService,
         metrics: DisplayMetrics,
         maxScrolls: Int = 0,
     ): FirstNewMessageInfo? {
         val dividerText = "以下为新消息"
-        fun listSignature(node: AccessibilityNodeInfo?): String {
-            node ?: return ""
-            return (0 until node.childCount).joinToString("|") { idx ->
-                val child = node.getChild(idx) ?: return@joinToString "$idx:null"
-                val rect = Rect()
-                child.getBoundsInScreen(rect)
-                val texts = NodeFinder.getAllTexts(child)
-                    .map { it.text.trim() }
-                    .filter { it.isNotEmpty() }
-                    .take(3)
-                    .joinToString("/")
-                "$idx:${rect.top},${rect.bottom}:$texts"
-            }
-        }
 
         fun stepTowardOlder(fast: Boolean) {
             val w = metrics.widthPixels.toFloat()
@@ -306,19 +288,23 @@ object MessageCollector {
             GestureHelper.delayExact(360)
         }
 
-        val maxIterations = if (maxScrolls > 0) maxScrolls else 40
         var lastSignature = ""
         var stableCount = 0
         var lastDividerBottom: Int? = null
         var stagnantDividerCount = 0
+        var iter = 0
 
-        repeat(maxIterations + 1) { iter ->
+        while (CollectorService.isRunning) {
             if (!CollectorService.isRunning) return null
             val root = service.getRootNode() ?: return null
             val divider = NodeFinder.findByText(root, dividerText)
                 ?: NodeFinder.findByTextContains(root, "新消息")  // 兼容 "X条新消息" 变体
             val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
                 ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+            if (chatList == null) {
+                log("[分割线] 找不到 ListView，无法继续扫描边界")
+                return null
+            }
             val signature = listSignature(chatList)
             if (signature.isNotEmpty() && signature == lastSignature) {
                 stableCount++
@@ -327,7 +313,7 @@ object MessageCollector {
             }
             lastSignature = signature
 
-            if (divider != null && chatList != null) {
+            if (divider != null) {
                 val dRect = Rect()
                 divider.getBoundsInScreen(dRect)
                 val listRect = Rect()
@@ -345,12 +331,13 @@ object MessageCollector {
                 if (dRect.bottom <= listRect.top + 50) {
                     val farAbove = dRect.bottom < listRect.top - 260
                     log("[分割线] 节点存在但在可视区上方 (dRect.bottom=${dRect.bottom}, listTop=${listRect.top}), ${if (farAbove) "中步" else "小步"}上翻找分割线")
-                    if (stableCount >= 3 || stagnantDividerCount >= 4 || iter == maxIterations) {
+                    if (stableCount >= 6 || stagnantDividerCount >= 6) {
                         log("[分割线] 动态扫描无进展，拒绝转发 (iter=$iter, stable=$stableCount, stagnant=$stagnantDividerCount)")
                         return null
                     }
                     stepTowardOlder(farAbove)
-                    return@repeat
+                    iter++
+                    continue
                 }
                 val firstNew = findFirstBubbleBelow(chatList, dRect.bottom, service)
                 if (firstNew != null) {
@@ -360,102 +347,44 @@ object MessageCollector {
                 // 分割线已可见但第一条消息还不完整: 慢速小步微调，避免一次滑到第二条。
                 log("[分割线] 命中分割线但第一条新消息未稳定露出, 慢速小步微调后重试")
                 tinyStepTowardNewer()
-                return@repeat
+                iter++
+                continue
             }
-            if (divider != null && chatList == null) {
-                log("[分割线] 命中分割线但找不到 ListView")
-                return null
+            val timeBoundary = findMiddleTimeBoundary(chatList, service)
+            if (timeBoundary != null) {
+                val (timeText, timeRect) = timeBoundary
+                val firstNew = findFirstBubbleBelow(chatList, timeRect.bottom, service)
+                if (firstNew != null) {
+                    log("[时间行] 命中 $timeText bounds=$timeRect, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
+                    return firstNew
+                }
+                log("[时间行] 命中 $timeText 但下方消息未稳定露出, 继续向上扫描")
             }
-            if (stableCount >= 3 || iter == maxIterations) {
+
+            if (stableCount >= 6) {
                 log("[分割线] 动态扫描未命中且列表无进展，拒绝转发 (iter=$iter, stable=$stableCount)")
                 return null
             }
             stepTowardOlder(fast = iter < 6)
+            iter++
         }
         return null
     }
 
-    /**
-     * 无分割线兜底：用企微时间行作为边界候选。
-     *
-     * 只接受晚于上次成功转发时间附近的时间行，避免重复消息文本造成误定位。
-     * 时间行不是绝对未读边界，找不到可解释的时间行时必须失败。
-     */
-    fun findFirstNewMessageByTimeBoundary(
-        service: WeWorkAccessibilityService,
-        metrics: DisplayMetrics,
-        lastForwardSuccessAt: Long?,
-        maxScrolls: Int = 24,
-    ): FirstNewMessageInfo? {
-        val baseline = lastForwardSuccessAt ?: run {
-            log("[时间行] 无上次成功转发时间，拒绝使用时间行兜底")
-            return null
-        }
-        val cutoff = baseline - TIME_BOUNDARY_TOLERANCE_MS
-        log("[时间行] 回到底部后按时间行扫描，基准=${baseline}, cutoff=${cutoff}")
-        scrollToLatestForTimeBoundary(service, metrics)
-
-        repeat(maxScrolls + 1) { iter ->
-            if (!CollectorService.isRunning) return null
-            val root = service.getRootNode() ?: return null
-            val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
-                ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
-            if (chatList == null) {
-                log("[时间行] 找不到 ListView，无法扫描时间边界")
-                return null
-            }
-
-            val anchor = findAnchorBelowAcceptableTime(chatList, service, cutoff)
-            if (anchor != null) return anchor
-
-            if (iter == maxScrolls) {
-                log("[时间行] $maxScrolls 次上翻仍未找到可用时间行")
-                return null
-            }
-            stepTowardOlderForTimeBoundary(service, metrics)
-        }
-        return null
-    }
-
-    private fun scrollToLatestForTimeBoundary(
-        service: WeWorkAccessibilityService,
-        metrics: DisplayMetrics,
-        maxSwipes: Int = 8,
-    ) {
-        var lastSignature = ""
-        var stableCount = 0
-        repeat(maxSwipes) { iter ->
-            if (!CollectorService.isRunning) return
-            val chatList = service.getRootNode()?.let {
-                NodeFinder.findByClassName(it, "android.widget.ListView")
-                    ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
-            }
-            val signature = listSignature(chatList)
-            if (signature.isNotEmpty() && signature == lastSignature) {
-                stableCount++
-                if (stableCount >= 2) {
-                    log("[时间行] 已回到最新位置 (iter=$iter)")
-                    return
-                }
-            } else {
-                stableCount = 0
-            }
-            lastSignature = signature
-            stepTowardNewerForTimeBoundary(service, metrics)
-        }
-        log("[时间行] 回到底部达到上限，继续尝试扫描")
-    }
-
-    private fun findAnchorBelowAcceptableTime(
+    private fun findMiddleTimeBoundary(
         chatList: AccessibilityNodeInfo,
         service: WeWorkAccessibilityService,
-        cutoff: Long,
-    ): FirstNewMessageInfo? {
+    ): Pair<String, Rect>? {
         val screenWidth = service.resources.displayMetrics.widthPixels
         val halfWidth = screenWidth / 2
-        val candidates = mutableListOf<Pair<String, Rect>>()
-        val now = System.currentTimeMillis()
+        val listRect = Rect()
+        chatList.getBoundsInScreen(listRect)
+        val safeTop = listRect.top + (listRect.height() * 0.20f).toInt()
+        val safeBottom = listRect.bottom - (listRect.height() * 0.18f).toInt()
+        val targetY = listRect.top + (listRect.height() * 0.50f).toInt()
         var currentTime = ""
+        var best: Pair<String, Rect>? = null
+        var bestScore = Int.MAX_VALUE
 
         for (i in 0 until chatList.childCount) {
             val child = chatList.getChild(i) ?: continue
@@ -464,30 +393,20 @@ object MessageCollector {
             when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
                 is ParseResult.TimeLabel -> {
                     currentTime = parsed.time
-                    val timeMillis = TimeParser.parseMessageTime(parsed.time)?.time
-                    if (timeMillis == null) {
-                        log("[时间行] 时间解析失败: ${parsed.time}")
-                    } else if (timeMillis < cutoff || timeMillis > now + 10 * 60 * 1000L) {
-                        log("[时间行] 跳过旧时间行: ${parsed.time} millis=$timeMillis cutoff=$cutoff")
-                    } else {
-                        log("[时间行] 命中候选时间行: ${parsed.time} rect=$rect")
-                        candidates.add(parsed.time to rect)
+                    if (rect.centerY() in safeTop..safeBottom) {
+                        val score = kotlin.math.abs(rect.centerY() - targetY)
+                        if (score < bestScore) {
+                            bestScore = score
+                            best = parsed.time to rect
+                        }
                     }
                 }
                 is ParseResult.Msg -> Unit
                 is ParseResult.Skip -> Unit
             }
         }
-
-        for ((timeText, rect) in candidates.sortedByDescending { it.second.bottom }) {
-            val anchor = findFirstBubbleBelow(chatList, rect.bottom, service)
-            if (anchor != null) {
-                log("[时间行] 接受时间行 $timeText 下方锚点: ${anchor.message.sender}: ${anchor.message.content.take(30)}")
-                return anchor
-            }
-            log("[时间行] 时间行 $timeText 下方暂无稳定消息，继续扫描")
-        }
-        return null
+        best?.let { log("[时间行] 屏幕中部候选: ${it.first} bounds=${it.second}") }
+        return best
     }
 
     private fun listSignature(chatList: AccessibilityNodeInfo?): String {
@@ -503,26 +422,6 @@ object MessageCollector {
                 .joinToString("/")
             "$idx:${rect.top},${rect.bottom}:$texts"
         }
-    }
-
-    private fun stepTowardOlderForTimeBoundary(
-        service: WeWorkAccessibilityService,
-        metrics: DisplayMetrics,
-    ) {
-        val w = metrics.widthPixels.toFloat()
-        val h = metrics.heightPixels.toFloat()
-        service.swipe(w / 2, h * 0.44f, w / 2, h * 0.56f, duration = 540)
-        GestureHelper.delayExact(360)
-    }
-
-    private fun stepTowardNewerForTimeBoundary(
-        service: WeWorkAccessibilityService,
-        metrics: DisplayMetrics,
-    ) {
-        val w = metrics.widthPixels.toFloat()
-        val h = metrics.heightPixels.toFloat()
-        service.swipe(w / 2, h * 0.56f, w / 2, h * 0.44f, duration = 540)
-        GestureHelper.delayExact(360)
     }
 
     /**
