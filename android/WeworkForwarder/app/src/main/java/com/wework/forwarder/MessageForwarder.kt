@@ -405,7 +405,7 @@ object MessageForwarder {
      *   ↑ 选择到这里 — 向下选（我们需要这个：从第一条新消息选到最底部）
      *   ↓ 选择到这里 — 向上选（不要点这个，会选中旧消息）
      *
-     * 到底信号：列表签名 + 最后一个 child bottom + childCount 连续稳定。
+     * 到底信号：列表末尾几何位置 + childCount 连续稳定。
      * needScroll=true 时必须先观察到列表内容发生过移动，避免手势未生效/控件树未刷新时误判到底。
      * 不再用"按钮 y 位置"判断，因为按钮位置取决于多选锚点，与列表是否到底无关。
      */
@@ -425,19 +425,15 @@ object MessageForwarder {
             return rect.bottom
         }
 
-        fun buildListSignature(chatList: AccessibilityNodeInfo?): String {
-            chatList ?: return ""
-            return (0 until chatList.childCount).joinToString("|") { idx ->
-                val child = chatList.getChild(idx) ?: return@joinToString "$idx:null"
-                val rect = Rect()
-                child.getBoundsInScreen(rect)
-                val texts = NodeFinder.getAllTexts(child)
-                    .map { it.text.trim() }
-                    .filter { it.isNotEmpty() }
-                    .take(3)
-                    .joinToString("/")
-                "$idx:${rect.top},${rect.bottom}:$texts"
-            }
+        fun listGeometryKey(chatList: AccessibilityNodeInfo?): String {
+            if (chatList == null || chatList.childCount <= 0) return ""
+            val firstChild = chatList.getChild(0)
+            val lastChild = chatList.getChild(chatList.childCount - 1)
+            val firstRect = Rect()
+            val lastRect = Rect()
+            firstChild?.getBoundsInScreen(firstRect)
+            lastChild?.getBoundsInScreen(lastRect)
+            return "${chatList.childCount}:${firstRect.top},${firstRect.bottom}:${lastRect.top},${lastRect.bottom}"
         }
 
         if (!needScroll) {
@@ -457,12 +453,14 @@ object MessageForwarder {
         }
 
         val initialList = findChatList(service.getRootNode())
-        var lastSignature = buildListSignature(initialList)
+        var lastGeometryKey = listGeometryKey(initialList)
         var lastBottom = lastChildBottom(initialList)
         var lastChildCount = initialList?.childCount ?: -1
         var observedMovement = !needScroll
         var stableCount = 0
         var lastTrustedSelectRect: Rect? = null
+        var scrollCount = 0
+        var noListCount = 0
 
         fun clickSelectRect(rect: Rect, reason: String): Boolean {
             log("[转发] $reason，点击'选择到这里' y=${rect.centerY()}")
@@ -471,18 +469,30 @@ object MessageForwarder {
             return true
         }
 
-        for (i in 0 until 20) {
+        while (CollectorService.isRunning) {
             if (stopped()) return false
+            scrollCount++
 
             GestureHelper.swipeDown(service, metrics)
 
             val chatList = findChatList(service.getRootNode())
-            val curChildCount = chatList?.childCount ?: 0
+            if (chatList == null) {
+                noListCount++
+                log("[转发] scrollSelect i=$scrollCount 找不到消息列表 noList=$noListCount")
+                if (noListCount >= 3) {
+                    log("[转发] 连续找不到消息列表，拒绝点击'选择到这里'")
+                    return false
+                }
+                continue
+            }
+            noListCount = 0
+
+            val curChildCount = chatList.childCount
             val curBottom = lastChildBottom(chatList)
-            val curSignature = buildListSignature(chatList)
-            val moved = lastSignature.isNotEmpty()
-                    && curSignature.isNotEmpty()
-                    && curSignature != lastSignature
+            val curGeometryKey = listGeometryKey(chatList)
+            val moved = lastGeometryKey.isNotEmpty()
+                    && curGeometryKey.isNotEmpty()
+                    && curGeometryKey != lastGeometryKey
             if (moved) {
                 observedMovement = true
             }
@@ -490,8 +500,8 @@ object MessageForwarder {
             val stable = curBottom > 0
                     && curBottom == lastBottom
                     && curChildCount == lastChildCount
-                    && curSignature.isNotEmpty()
-                    && curSignature == lastSignature
+                    && curGeometryKey.isNotEmpty()
+                    && curGeometryKey == lastGeometryKey
             val btn = findSelectToHereDown(service)
             val btnY = btn?.let {
                 val rect = Rect()
@@ -501,7 +511,7 @@ object MessageForwarder {
                 }
                 rect.centerY()
             } ?: -1
-            log("[转发] scrollSelect i=${i + 1} moved=$moved observed=$observedMovement stable=$stable stableCount=$stableCount bottom=$curBottom count=$curChildCount btnY=$btnY")
+            log("[转发] scrollSelect i=$scrollCount moved=$moved observed=$observedMovement stable=$stable stableCount=$stableCount bottom=$curBottom count=$curChildCount btnY=$btnY")
 
             if (stable && observedMovement) {
                 stableCount++
@@ -535,10 +545,10 @@ object MessageForwarder {
             }
             lastBottom = curBottom
             lastChildCount = curChildCount
-            lastSignature = curSignature
+            lastGeometryKey = curGeometryKey
         }
 
-        log("[转发] 未确认到底，拒绝点击'选择到这里'")
+        log("[转发] 采集已停止，放弃点击'选择到这里'")
         return false
     }
 
