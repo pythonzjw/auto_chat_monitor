@@ -86,34 +86,29 @@ object MessageForwarder {
         // 分批转发
         val batches = Config.targetGroups.chunked(Config.BATCH_SIZE)
         log("[转发] ${Config.targetGroups.size} 个目标群，分 ${batches.size} 批")
-        var allBatchesSucceeded = true
 
         for ((batchIdx, batch) in batches.withIndex()) {
             if (stopped()) return false
             log("[转发] === 第 ${batchIdx + 1}/${batches.size} 批（${batch.size}个群）===")
 
-            // v2.4.12: 第 2 批起留在原群,不再退群再进群
-            // 用文本指纹复定位锚点(分割线已被读消失,getNthFromBottom 也会因企微滚到底而失效)
+            // 第 2 批起发送后会回到源群底部；必须从底部持续上滑复定位同一条第一新消息，
+            // 找到后再走和第 1 批相同的长按、多选、下滑到底流程。
             log("[转发] 步骤4: 长按消息...")
             val pressInfo: MessageCollector.FirstNewMessageInfo?
             if (batchIdx == 0) {
                 pressInfo = anchor
             } else {
-                pressInfo = MessageCollector.findAnchorByMessage(service, metrics, firstNewMsg, maxScrolls = 30)
+                pressInfo = MessageCollector.findAnchorByMessage(service, metrics, firstNewMsg)
                 usedDivider = true  // 复定位后锚点离底部远,scrollAndSelectToHere 必须走滚动版本
             }
             if (pressInfo == null) {
                 log("[转发] ✗ 取锚点失败,无法长按")
                 dumpOnFailure(service, "找不到锚点_批${batchIdx + 1}")
-                if (batchIdx == 0) return false
-                allBatchesSucceeded = false
-                continue
+                return false
             }
             // 步骤5：只在锚点消息内部尝试多个长按点，确认进入多选后才继续扩选。
             if (!enterMultiSelectFromAnchor(service, metrics, pressInfo, batchIdx + 1)) {
-                if (batchIdx == 0) return false
-                allBatchesSucceeded = false
-                continue
+                return false
             }
 
             // 步骤6：单条消息不做扩选，避免误点"选择到这里"把旧消息带上
@@ -126,9 +121,7 @@ object MessageForwarder {
                     log("[转发] ✗ 全选失败")
                     dumpOnFailure(service, "全选失败_批${batchIdx + 1}")
                     exitMultiSelect(service)
-                    if (batchIdx == 0) return false
-                    allBatchesSucceeded = false
-                    continue
+                    return false
                 }
                 log("[转发] ✓ 全选完成")
             }
@@ -139,9 +132,7 @@ object MessageForwarder {
                 log("[转发] ✗ 点击转发失败")
                 dumpOnFailure(service, "转发按钮失败_批${batchIdx + 1}")
                 exitMultiSelect(service)
-                if (batchIdx == 0) return false
-                allBatchesSucceeded = false
-                continue
+                return false
             }
             log("[转发] ✓ 已进入选群页面")
 
@@ -152,9 +143,7 @@ object MessageForwarder {
                 dumpOnFailure(service, "选群失败_批${batchIdx + 1}")
                 service.pressBack()
                 exitMultiSelect(service)
-                if (batchIdx == 0) return false
-                allBatchesSucceeded = false
-                continue
+                return false
             }
 
             // 步骤9：发送
@@ -162,9 +151,7 @@ object MessageForwarder {
             if (!confirmSend(service)) {
                 log("[转发] ✗ 发送失败")
                 dumpOnFailure(service, "发送失败_批${batchIdx + 1}")
-                if (batchIdx == 0) return false
-                allBatchesSucceeded = false
-                continue
+                return false
             }
             log("[转发] ✓ 第 ${batchIdx + 1} 批发送成功")
 
@@ -177,11 +164,7 @@ object MessageForwarder {
         }
 
         Storage.saveMessages(listOf(firstNewMsg))
-        if (allBatchesSucceeded) {
-            Storage.saveForwardSuccessAt()
-        } else {
-            log("[转发] 存在批次失败，不更新成功时间边界")
-        }
+        Storage.saveForwardSuccessAt()
         log("[转发] ✓ 全部完成！")
         return true
     }

@@ -553,33 +553,68 @@ object MessageCollector {
     /**
      * v2.4.12: 用消息文本指纹复定位锚点(供多批转发的第 2 批起使用)
      *
-     * 第一批转发完后企微把会话滚到底部最新消息,且分割线已被清除。
-     * 此时按 sender+content 在 ListView 里搜索原锚点节点,
-     * 找不到就 swipeUp(往上看旧消息)继续找。
+     * 第一批转发完后企微会回到源群底部,且分割线已被读消失。
+     * 后续批次必须从底部持续上滑复定位同一条第一新消息锚点。
      */
     fun findAnchorByMessage(
         service: WeWorkAccessibilityService,
         metrics: DisplayMetrics,
         target: Storage.Message,
-        maxScrolls: Int = 30,
     ): FirstNewMessageInfo? {
-        repeat(maxScrolls + 1) { iter ->
+        fun listGeometryKey(chatList: AccessibilityNodeInfo?): String {
+            if (chatList == null || chatList.childCount <= 0) return ""
+            val firstChild = chatList.getChild(0)
+            val lastChild = chatList.getChild(chatList.childCount - 1)
+            val firstRect = Rect()
+            val lastRect = Rect()
+            firstChild?.getBoundsInScreen(firstRect)
+            lastChild?.getBoundsInScreen(lastRect)
+            return "${chatList.childCount}:${firstRect.top},${firstRect.bottom}:${lastRect.top},${lastRect.bottom}"
+        }
+
+        var iter = 0
+        var noListCount = 0
+        var stableCount = 0
+        var lastGeometryKey = ""
+
+        while (CollectorService.isRunning) {
             if (!CollectorService.isRunning) return null
             val root = service.getRootNode() ?: return null
             val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
                 ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
-                ?: return null
+            if (chatList == null) {
+                noListCount++
+                log("[复定位] iter=$iter 找不到消息列表 noList=$noListCount")
+                if (noListCount >= 3) return null
+                GestureHelper.delay(400)
+                continue
+            }
+            noListCount = 0
+
             val info = findItemBySignature(chatList, target, service)
             if (info != null) {
-                log("[复定位] 命中锚点: ${target.sender}: ${target.content.take(30)}")
+                log("[复定位] iter=$iter 命中锚点: ${target.sender}: ${target.content.take(30)}")
                 return info
             }
-            if (iter == maxScrolls) {
-                log("[复定位] $maxScrolls 次 swipeUp 仍未找到原锚点")
+
+            val geometryKey = listGeometryKey(chatList)
+            if (geometryKey.isNotEmpty() && geometryKey == lastGeometryKey) {
+                stableCount++
+            } else {
+                stableCount = 0
+            }
+            lastGeometryKey = geometryKey
+
+            if (stableCount >= 6) {
+                log("[复定位] 列表连续无进展 $stableCount 轮，仍未找到原锚点")
                 return null
+            }
+            if (iter % 10 == 0) {
+                log("[复定位] iter=$iter 未命中锚点，继续从底部上滑查找")
             }
             GestureHelper.swipeUp(service, metrics)
             GestureHelper.delay(400)
+            iter++
         }
         return null
     }
