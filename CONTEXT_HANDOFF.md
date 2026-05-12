@@ -1,21 +1,19 @@
 # CONTEXT_HANDOFF
 
 ## 当前目标
-- 提升超屏消息边界和多选扩选稳定性：屏幕内足够仍按倒数 K；超屏时持续向上找分割线或屏幕中部时间行；扩选到底时处理“选择到这里”按钮短暂消失。
+- 提升超屏消息边界和进入消息多选的稳定性：屏幕内足够仍按倒数 K；超屏时持续向上找分割线或屏幕中部时间行；进入多选时只在锚点消息内部多点长按重试。
 
 ## 已完成
 - `MessageForwarder` 改为当前屏不足 `K` 时持续上滑找分割线/时间行边界。
 - `MessageCollector.findFirstNewMessageByDivider()` 改为统一扫描：优先分割线，其次屏幕中部时间行；命中后取边界下方第一条稳定消息作为锚点。
 - 删除旧时间行兜底的“回到底部重扫”和“上次成功时间判断”，避免第一次运行或无成功时间时拒绝时间行。
 - `scrollAndSelectToHere()` 下滑扩选时缓存最后一次下半屏“选择到这里”按钮；到底后当前按钮消失时先 `swipeUp` 小幅回拉再找，仍找不到则点缓存坐标。
+- `MessageForwarder` 进入消息多选由单点长按改为锚点消息内多候选点长按：现有坐标、气泡中心、主要文本区域、行安全中心；只有点击“多选”并确认进入多选模式后才继续扩选。
 - `TimeParser` 补充 `上午/下午 HH:mm` 解析。
 - 选群逻辑、批次逻辑、第二批复定位逻辑未改。
 
 ## 已修改文件
 - `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageForwarder.kt`
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageCollector.kt`
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/Storage.kt`
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/TimeParser.kt`
 - `CONTEXT_HANDOFF.md`
 
 ## 关键决策
@@ -24,6 +22,7 @@
 - 未进入多选前不回到底部；持续向上找边界，只有控件树异常、离开聊天页或列表连续不动才失败。
 - 扩选阶段仍保留列表稳定 3 次判定，但按钮目标不再只依赖最后一帧，避免滑过头后按钮消失导致失败。
 - K 只保留“当前屏足够时倒数第 K 条”的快速路径，不做跨屏累计。
+- “找不到多选”按长按坐标不准处理，不改多选按钮选择器；候选点必须来自同一个锚点消息节点并通过安全区过滤，避免全屏乱点。
 
 ## 验证情况
 - `git diff --check` 已通过。
@@ -31,7 +30,7 @@
 - 需要 CI 或装有 JDK 17 的环境验证编译。
 
 ## 下一步
-- 真机重点观察日志：`持续上滑找分割线/时间行`、`[时间行] 命中`、`已确认到底但找不到'选择到这里'按钮，swipeUp 小幅回拉后重试`、`使用最后可信坐标`。
+- 真机重点观察日志：`持续上滑找分割线/时间行`、`[时间行] 命中`、`长按候选`、`候选 N 已进入消息多选模式`、`已确认到底但找不到'选择到这里'按钮，swipeUp 小幅回拉后重试`。
 - 验证三类场景：当前屏足够 K、有分割线、无分割线但有时间行、扩选滑到底按钮消失后回拉。
 
 ## 已知问题

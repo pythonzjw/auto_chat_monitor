@@ -24,6 +24,11 @@ object MessageForwarder {
         BOTTOM
     }
 
+    private data class LongPressCandidate(
+        val source: String,
+        val rect: Rect
+    )
+
     private fun log(msg: String) {
         Log.i(TAG, msg)
         Config.uiLog?.invoke(msg)
@@ -104,28 +109,8 @@ object MessageForwarder {
                 allBatchesSucceeded = false
                 continue
             }
-            // v2.3.0: ListView 子节点路径返回 node + rect=null, findBubbleRect 在 node 内找气泡
-            val pressRect = pressInfo.rect ?: pressInfo.node?.let { findBubbleRect(it) }
-            if (pressRect == null) {
-                log("[转发] ✗ 锚点既无 rect 也无 node,无法定位长按坐标")
-                dumpOnFailure(service, "锚点无定位信息_批${batchIdx + 1}")
-                if (batchIdx == 0) return false
-                allBatchesSucceeded = false
-                continue
-            }
-            if (!isSafeLongPressRect(pressRect, metrics)) {
-                log("[转发] ✗ 锚点在危险区域，拒绝长按 bounds=$pressRect")
-                dumpOnFailure(service, "锚点危险区域_批${batchIdx + 1}")
-                if (batchIdx == 0) return false
-                allBatchesSucceeded = false
-                continue
-            }
-            log("[转发] 长按坐标: (${pressRect.centerX()}, ${pressRect.centerY()})")
-            service.longPressAt(pressRect.centerX().toFloat(), pressRect.centerY().toFloat())
-            GestureHelper.delay(1200)
-
-            // 步骤5：点击"多选"并确认已进入多选模式，避免弹出菜单未点中后继续扩选
-            if (!clickMultiSelectWithVerify(service, metrics, batchIdx + 1)) {
+            // 步骤5：只在锚点消息内部尝试多个长按点，确认进入多选后才继续扩选。
+            if (!enterMultiSelectFromAnchor(service, metrics, pressInfo, batchIdx + 1)) {
                 if (batchIdx == 0) return false
                 allBatchesSucceeded = false
                 continue
@@ -209,40 +194,168 @@ object MessageForwarder {
         return rect.centerY() in topSafe..bottomSafe
     }
 
-    private fun clickMultiSelectWithVerify(
+    private fun enterMultiSelectFromAnchor(
         service: WeWorkAccessibilityService,
         metrics: DisplayMetrics,
+        pressInfo: MessageCollector.FirstNewMessageInfo,
         batchNumber: Int
     ): Boolean {
-        log("[转发] 步骤5: 查找'多选'...")
-        repeat(2) { attempt ->
-            val multiSelectBtn = waitForNodeInAllWindows(service, if (attempt == 0) 3000 else 1500) { root ->
-                NodeFinder.findByText(root, "多选") ?: NodeFinder.findByDesc(root, "多选")
-            }
-            if (multiSelectBtn == null) {
-                log("[转发] 第 ${attempt + 1} 次找不到'多选'按钮")
-                return@repeat
-            }
-
-            val rect = Rect()
-            multiSelectBtn.getBoundsInScreen(rect)
-            log("[转发] 点击'多选' attempt=${attempt + 1} (${rect.centerX()}, ${rect.centerY()})")
-            val clicked = NodeFinder.clickNode(service, multiSelectBtn)
-            if (!clicked) {
-                service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-            }
-            GestureHelper.delay(900)
-
-            if (isInMessageMultiSelectMode(service)) {
-                log("[转发] ✓ 已进入消息多选模式")
-                return true
-            }
-            log("[转发] 点击'多选'后未进入多选模式，准备重试")
+        val candidates = buildLongPressCandidates(pressInfo, metrics)
+        if (candidates.isEmpty()) {
+            log("[转发] ✗ 锚点无安全长按候选点")
+            dumpOnFailure(service, "锚点无安全长按点_批$batchNumber")
+            return false
         }
 
-        log("[转发] ✗ 点击'多选'失败，终止本批，避免误选旧消息")
-        dumpAllWindows(service, "多选点击未生效_批$batchNumber")
-        dismissPopup(service, metrics)
+        log("[转发] 步骤5: 长按锚点进入多选，候选点 ${candidates.size} 个")
+        for ((idx, candidate) in candidates.withIndex()) {
+            if (stopped()) return false
+            val rect = candidate.rect
+            log("[转发] 长按候选 ${idx + 1}/${candidates.size} ${candidate.source}: (${rect.centerX()}, ${rect.centerY()}) bounds=$rect")
+            service.longPressAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+            GestureHelper.delay(1000)
+
+            if (tryClickMultiSelectWithVerify(service, waitMs = 1800, attemptLabel = "候选${idx + 1}")) {
+                log("[转发] ✓ 候选 ${idx + 1}(${candidate.source}) 已进入消息多选模式")
+                return true
+            }
+            if (isInMessageMultiSelectMode(service)) {
+                log("[转发] ✓ 候选 ${idx + 1}(${candidate.source}) 延迟进入消息多选模式")
+                return true
+            }
+
+            if (hasLongPressPopup(service, metrics)) {
+                log("[转发] 候选 ${idx + 1} 弹出菜单但未进入多选，关闭后尝试下一个点")
+                dismissPopup(service, metrics)
+            } else {
+                log("[转发] 候选 ${idx + 1} 未弹出多选菜单，尝试下一个点")
+            }
+        }
+
+        log("[转发] ✗ 所有长按候选点均未进入多选，终止本批")
+        if (isInMessageMultiSelectMode(service)) {
+            log("[转发] ✓ 最终检查已进入消息多选模式")
+            return true
+        }
+        dumpAllWindows(service, "多点长按未进入多选_批$batchNumber")
+        if (hasLongPressPopup(service, metrics)) {
+            dismissPopup(service, metrics)
+        }
+        return false
+    }
+
+    private fun buildLongPressCandidates(
+        pressInfo: MessageCollector.FirstNewMessageInfo,
+        metrics: DisplayMetrics
+    ): List<LongPressCandidate> {
+        val result = mutableListOf<LongPressCandidate>()
+        val rowRect = pressInfo.node?.let {
+            Rect().also { rect -> it.getBoundsInScreen(rect) }
+        }
+
+        fun rectAround(cx: Int, cy: Int): Rect {
+            return Rect(cx - 40, cy - 20, cx + 40, cy + 20)
+        }
+
+        fun addCandidate(source: String, rect: Rect?) {
+            rect ?: return
+            if (rect.width() <= 0 || rect.height() <= 0) return
+            val cx = rect.centerX()
+            val cy = rect.centerY()
+            if (!isSafeLongPressRect(rect, metrics)) {
+                log("[转发] 跳过危险长按点 $source bounds=$rect")
+                return
+            }
+            if (rowRect != null && !rowRect.contains(cx, cy)) {
+                log("[转发] 跳过越界长按点 $source bounds=$rect row=$rowRect")
+                return
+            }
+            if (cx < metrics.widthPixels * 0.08f || cy > metrics.heightPixels * 0.88f) {
+                log("[转发] 跳过头像/底栏附近长按点 $source bounds=$rect")
+                return
+            }
+            val duplicate = result.any { existing ->
+                kotlin.math.abs(existing.rect.centerX() - cx) <= 12
+                    && kotlin.math.abs(existing.rect.centerY() - cy) <= 12
+            }
+            if (!duplicate) {
+                result.add(LongPressCandidate(source, rectAround(cx, cy)))
+            }
+        }
+
+        addCandidate("primaryRect", pressInfo.rect)
+        pressInfo.node?.let { node ->
+            addCandidate("bubbleCenter", findBubbleRect(node))
+            addCandidate("textCenter", findMainTextRect(node))
+            rowRect?.let { row ->
+                val x = pressInfo.rect?.centerX()
+                    ?: findBubbleRect(node).centerX()
+                val y = row.centerY().coerceIn(
+                    (metrics.heightPixels * 0.20f).toInt(),
+                    (metrics.heightPixels * 0.82f).toInt()
+                )
+                addCandidate("rowSafeCenter", rectAround(x, y))
+            }
+        }
+        return result.take(4)
+    }
+
+    private fun findMainTextRect(listItem: AccessibilityNodeInfo): Rect? {
+        val timeRegex = Regex("^(上午|下午)?\\s*\\d{1,2}:\\d{2}(:\\d{2})?$")
+        return NodeFinder.getAllTexts(listItem)
+            .filter { textNode ->
+                val text = textNode.text.trim()
+                text.isNotEmpty() && !timeRegex.matches(text)
+                    && text != "以下为新消息"
+                    && text != "选择到这里"
+            }
+            .maxByOrNull { it.bounds.width() * it.bounds.height() }
+            ?.bounds
+    }
+
+    private fun tryClickMultiSelectWithVerify(
+        service: WeWorkAccessibilityService,
+        waitMs: Long,
+        attemptLabel: String
+    ): Boolean {
+        val multiSelectBtn = waitForNodeInAllWindows(service, waitMs) { root ->
+            NodeFinder.findByText(root, "多选") ?: NodeFinder.findByDesc(root, "多选")
+        }
+        if (multiSelectBtn == null) {
+            log("[转发] $attemptLabel 找不到'多选'按钮")
+            return false
+        }
+
+        val rect = Rect()
+        multiSelectBtn.getBoundsInScreen(rect)
+        log("[转发] $attemptLabel 点击'多选' (${rect.centerX()}, ${rect.centerY()})")
+        val clicked = NodeFinder.clickNode(service, multiSelectBtn)
+        if (!clicked) {
+            service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
+        }
+        GestureHelper.delay(900)
+
+        if (isInMessageMultiSelectMode(service)) {
+            return true
+        }
+        log("[转发] $attemptLabel 点击'多选'后未进入多选模式")
+        return false
+    }
+
+    private fun hasLongPressPopup(service: WeWorkAccessibilityService, metrics: DisplayMetrics): Boolean {
+        val menuTexts = setOf("复制", "转发", "收藏", "删除", "引用", "提醒", "多选")
+        for (root in service.getAllRootNodes()) {
+            val rect = Rect()
+            root.getBoundsInScreen(rect)
+            if (rect.width() in 1 until (metrics.widthPixels * 0.85f).toInt()
+                || rect.height() in 1 until (metrics.heightPixels * 0.85f).toInt()) {
+                return true
+            }
+            val hasMenuText = menuTexts.any { text ->
+                NodeFinder.findByText(root, text) != null || NodeFinder.findByDesc(root, text) != null
+            }
+            if (hasMenuText) return true
+        }
         return false
     }
 
