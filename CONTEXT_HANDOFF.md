@@ -16,6 +16,8 @@
 - 删除 `CollectorService` 中进入源群成功后的重复等待；进群等待只保留在 `Navigator.enterGroup/searchAndEnterGroup` 内执行一次。
 - `MessageForwarder.forwardNewMessages()` 不再用未读数 `K` 做精确条数定位；改为先等待聊天列表稳定，再直接查找分割线/时间行锚点。
 - `MessageCollector.findFirstNewMessageByDivider()` 找边界时降低上滑步长和节奏；时间行识别从“屏幕中部”扩大到 ListView 可视区，命中时间行但下方消息未稳定露出时会小幅回拉找下面第一条消息。
+- 时间行边界现在使用实际时间文本节点 bounds，不再使用整行 bounds；如果同一个 ListView child 同时包含时间和消息，会尝试接受该 child 内时间下方的第一条消息。
+- `scrollAndSelectToHere()` 在底部“选择到这里”持续可见但列表几何无移动时会点击该底部按钮，避免多选后卡在 `observedMovement=false`。
 - `TimeParser` 补充 `上午/下午 HH:mm` 解析。
 - 选群逻辑未改。
 

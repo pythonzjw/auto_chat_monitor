@@ -467,6 +467,7 @@ object MessageForwarder {
         var lastChildCount = initialList?.childCount ?: -1
         var observedMovement = !needScroll
         var stableCount = 0
+        var visibleButtonStillCount = 0
         var lastTrustedSelectRect: Rect? = null
         var scrollCount = 0
         var noListCount = 0
@@ -512,15 +513,27 @@ object MessageForwarder {
                     && curGeometryKey.isNotEmpty()
                     && curGeometryKey == lastGeometryKey
             val btn = findSelectToHereDown(service)
+            var btnRect: Rect? = null
             val btnY = btn?.let {
                 val rect = Rect()
                 it.getBoundsInScreen(rect)
                 if (rect.centerY() > metrics.heightPixels / 2) {
                     lastTrustedSelectRect = Rect(rect)
+                    btnRect = Rect(rect)
                 }
                 rect.centerY()
             } ?: -1
             log("[转发] scrollSelect i=$scrollCount moved=$moved observed=$observedMovement stable=$stable stableCount=$stableCount bottom=$curBottom count=$curChildCount btnY=$btnY")
+
+            if (btnRect != null && stable && !observedMovement) {
+                visibleButtonStillCount++
+                log("[转发] 底部'选择到这里'可见但列表未移动，第 ${visibleButtonStillCount} 轮")
+                if (visibleButtonStillCount >= 3) {
+                    return clickSelectRect(btnRect!!, "底部按钮持续可见且列表无移动")
+                }
+            } else if (moved || btnRect == null) {
+                visibleButtonStillCount = 0
+            }
 
             if (stable && observedMovement) {
                 stableCount++

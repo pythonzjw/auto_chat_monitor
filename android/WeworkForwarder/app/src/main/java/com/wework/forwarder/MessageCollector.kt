@@ -396,11 +396,12 @@ object MessageCollector {
             when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
                 is ParseResult.TimeLabel -> {
                     currentTime = parsed.time
-                    if (rect.bottom > safeTop && rect.top < safeBottom) {
-                        val score = kotlin.math.abs(rect.centerY() - targetY)
+                    val timeRect = findTimeTextBounds(child, parsed.time) ?: rect
+                    if (timeRect.bottom > safeTop && timeRect.top < safeBottom) {
+                        val score = kotlin.math.abs(timeRect.centerY() - targetY)
                         if (score < bestScore) {
                             bestScore = score
-                            best = parsed.time to rect
+                            best = parsed.time to Rect(timeRect)
                         }
                     }
                 }
@@ -410,6 +411,15 @@ object MessageCollector {
         }
         best?.let { log("[时间行] 可视区候选: ${it.first} bounds=${it.second}") }
         return best
+    }
+
+    private fun findTimeTextBounds(
+        node: AccessibilityNodeInfo,
+        timeText: String,
+    ): Rect? {
+        return NodeFinder.getAllTexts(node)
+            .firstOrNull { it.text.trim() == timeText || isTimeLabel(it.text.trim()) }
+            ?.bounds
     }
 
     private fun listSignature(chatList: AccessibilityNodeInfo?): String {
@@ -503,6 +513,14 @@ object MessageCollector {
             when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
                 is ParseResult.TimeLabel -> {
                     currentTime = parsed.time
+                    if (isLikelyMessageRow(child, rect)) {
+                        val bubbleRect = pickBubbleRectBelow(child, minTop)
+                        if (bubbleRect.centerY() > minTop + 8 && bubbleRect.centerY() in pressTopSafe..pressBottomSafe) {
+                            val msg = buildFallbackMessage(child, parsed.time)
+                            log("[分割线] 时间行同节点包含消息，接受第一条候选 i=$i rect=$rect bubble=$bubbleRect type=${msg.type}")
+                            return FirstNewMessageInfo(msg, node = child, rect = bubbleRect)
+                        }
+                    }
                     log("[分割线] 跳过时间行 i=$i rect=$rect time=${parsed.time}")
                 }
                 is ParseResult.Skip -> {
