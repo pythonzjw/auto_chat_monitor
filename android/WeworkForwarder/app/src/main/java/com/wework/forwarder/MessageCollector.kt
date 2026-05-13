@@ -256,7 +256,7 @@ object MessageCollector {
     }
 
     /**
-     * 持续向上扫描边界：优先 "以下为新消息" 分割线，其次屏幕中部时间行。
+     * 持续向上扫描边界：优先 "以下为新消息" 分割线，其次可视区时间行。
      *
      * 不做跨屏 K 计数，也不回到底部重扫；未进入多选前只向上找边界。
      * maxScrolls 参数仅保留兼容旧调用，不再作为正常扫描上限。
@@ -273,11 +273,11 @@ object MessageCollector {
             val w = metrics.widthPixels.toFloat()
             val h = metrics.heightPixels.toFloat()
             if (fast) {
-                service.swipe(w / 2, h * 0.44f, w / 2, h * 0.56f, duration = 560)
-                GestureHelper.delayExact(320)
+                service.swipe(w / 2, h * 0.455f, w / 2, h * 0.545f, duration = 620)
+                GestureHelper.delayExact(520)
             } else {
-                service.swipe(w / 2, h * 0.475f, w / 2, h * 0.525f, duration = 500)
-                GestureHelper.delayExact(360)
+                service.swipe(w / 2, h * 0.475f, w / 2, h * 0.525f, duration = 580)
+                GestureHelper.delayExact(520)
             }
         }
 
@@ -358,7 +358,10 @@ object MessageCollector {
                     log("[时间行] 命中 $timeText bounds=$timeRect, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
                     return firstNew
                 }
-                log("[时间行] 命中 $timeText 但下方消息未稳定露出, 继续向上扫描")
+                log("[时间行] 命中 $timeText 但下方消息未稳定露出, 小幅回拉找下方消息")
+                tinyStepTowardNewer()
+                iter++
+                continue
             }
 
             if (stableCount >= 6) {
@@ -379,8 +382,8 @@ object MessageCollector {
         val halfWidth = screenWidth / 2
         val listRect = Rect()
         chatList.getBoundsInScreen(listRect)
-        val safeTop = listRect.top + (listRect.height() * 0.20f).toInt()
-        val safeBottom = listRect.bottom - (listRect.height() * 0.18f).toInt()
+        val safeTop = listRect.top + 24
+        val safeBottom = listRect.bottom - 24
         val targetY = listRect.top + (listRect.height() * 0.50f).toInt()
         var currentTime = ""
         var best: Pair<String, Rect>? = null
@@ -393,7 +396,7 @@ object MessageCollector {
             when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
                 is ParseResult.TimeLabel -> {
                     currentTime = parsed.time
-                    if (rect.centerY() in safeTop..safeBottom) {
+                    if (rect.bottom > safeTop && rect.top < safeBottom) {
                         val score = kotlin.math.abs(rect.centerY() - targetY)
                         if (score < bestScore) {
                             bestScore = score
@@ -405,7 +408,7 @@ object MessageCollector {
                 is ParseResult.Skip -> Unit
             }
         }
-        best?.let { log("[时间行] 屏幕中部候选: ${it.first} bounds=${it.second}") }
+        best?.let { log("[时间行] 可视区候选: ${it.first} bounds=${it.second}") }
         return best
     }
 
