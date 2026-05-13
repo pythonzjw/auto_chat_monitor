@@ -40,38 +40,25 @@ object MessageForwarder {
      * v2.0: 执行完整的转发流程（支持分批）
      * 前提：当前已在源群聊天页面
      *
-     * @param unreadCount 调用方读到的未读徽章数(由 Navigator.findUnreadCountForGroup 提供)
-     *                    将被截断到 Config.maxForwardCount 上限
+     * @param unreadCount 调用方读到的未读徽章数(由 Navigator.findUnreadCountForGroup 提供)，
+     *                    仅作为触发进群的信号，不再作为精确转发条数。
      */
     fun forwardNewMessages(
         service: WeWorkAccessibilityService,
         metrics: DisplayMetrics,
         unreadCount: Int
     ): Boolean {
-        log("[转发] 开始执行转发流程,目标:转最后 $unreadCount 条...")
+        log("[转发] 开始执行转发流程,未读徽章触发=$unreadCount，按群内分割线/时间行定位...")
 
-        val k = minOf(unreadCount, Config.maxForwardCount)
-        if (k < unreadCount) {
-            log("[转发] 徽章 $unreadCount 超过上限 ${Config.maxForwardCount},截断为 $k")
-        }
-        val isSingleMessage = k == 1
+        log("[转发] 步骤1: 等待聊天列表稳定...")
+        waitForChatListStable(service)
 
-        // 先用未读数 K 定位当前屏锚点；超屏则持续向上找分割线或时间行边界。
-        log("[转发] 步骤1: 数当前屏幕消息...")
-        var anchor = MessageCollector.getNthFromBottomIfEnough(service, metrics, k)
-        var usedDivider = false
-        var anchorSource = "当前屏幕倒数"
-        if (anchor != null) {
-            log("[转发] 屏幕消息 >= $k, 直接定位锚点")
-        } else {
-            log("[转发] 屏幕消息 < $k, 持续上滑找分割线/时间行...")
-            anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
-            if (anchor != null) {
-                usedDivider = true
-                anchorSource = "分割线/时间行辅助"
-            } else {
-                log("[转发] 分割线/时间行边界不可用，拒绝使用 K 计数兜底")
-            }
+        log("[转发] 步骤2: 持续上滑找分割线/时间行边界...")
+        val anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
+        val usedDivider = true
+        val anchorSource = if (anchor != null) "分割线/时间行辅助" else "无边界"
+        if (anchor == null) {
+            log("[转发] 分割线/时间行边界不可用，拒绝使用未读数 K 兜底")
         }
         if (anchor == null) {
             log("[转发] ✗ 所有路径均失败")
@@ -99,7 +86,6 @@ object MessageForwarder {
                 pressInfo = anchor
             } else {
                 pressInfo = MessageCollector.findAnchorByMessage(service, metrics, firstNewMsg)
-                usedDivider = true  // 复定位后锚点离底部远,scrollAndSelectToHere 必须走滚动版本
             }
             if (pressInfo == null) {
                 log("[转发] ✗ 取锚点失败,无法长按")
@@ -111,20 +97,15 @@ object MessageForwarder {
                 return false
             }
 
-            // 步骤6：单条消息不做扩选，避免误点"选择到这里"把旧消息带上
-            if (isSingleMessage) {
-                log("[转发] 步骤6: 单条新消息，跳过'选择到这里'扩选")
-            } else {
-                // 分割线路径必须滑到底，屏幕直选路径可快速点击
-                log("[转发] 步骤6: 滚动全选 (needScroll=$usedDivider)...")
-                if (!scrollAndSelectToHere(service, metrics, needScroll = usedDivider)) {
-                    log("[转发] ✗ 全选失败")
-                    dumpOnFailure(service, "全选失败_批${batchIdx + 1}")
-                    exitMultiSelect(service)
-                    return false
-                }
-                log("[转发] ✓ 全选完成")
+            // 分割线/时间行路径必须滑到底，选中从锚点到当前最新消息的整批内容。
+            log("[转发] 步骤6: 滚动全选 (needScroll=$usedDivider)...")
+            if (!scrollAndSelectToHere(service, metrics, needScroll = usedDivider)) {
+                log("[转发] ✗ 全选失败")
+                dumpOnFailure(service, "全选失败_批${batchIdx + 1}")
+                exitMultiSelect(service)
+                return false
             }
+            log("[转发] ✓ 全选完成")
 
             // 步骤7：点击转发
             log("[转发] 步骤7: 点击'转发'...")
@@ -170,6 +151,51 @@ object MessageForwarder {
     }
 
     // ===== 内部方法 =====
+
+    private fun waitForChatListStable(service: WeWorkAccessibilityService, timeoutMs: Long = 8000L) {
+        fun findChatList(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            return root?.let {
+                NodeFinder.findByClassName(it, "android.widget.ListView")
+                    ?: NodeFinder.findByClassName(it, "androidx.recyclerview.widget.RecyclerView")
+            }
+        }
+
+        fun signature(chatList: AccessibilityNodeInfo?): String {
+            if (chatList == null || chatList.childCount <= 0) return ""
+            return (0 until chatList.childCount).joinToString("|") { idx ->
+                val child = chatList.getChild(idx) ?: return@joinToString "$idx:null"
+                val rect = Rect()
+                child.getBoundsInScreen(rect)
+                val text = NodeFinder.getAllTexts(child)
+                    .map { it.text.trim() }
+                    .filter { it.isNotEmpty() }
+                    .take(2)
+                    .joinToString("/")
+                "$idx:${rect.top},${rect.bottom}:$text"
+            }
+        }
+
+        val endAt = System.currentTimeMillis() + timeoutMs
+        var lastSignature = ""
+        var stableCount = 0
+        var checks = 0
+        while (!stopped() && System.currentTimeMillis() < endAt) {
+            val cur = signature(findChatList(service.getRootNode()))
+            checks++
+            if (cur.isNotEmpty() && cur == lastSignature) {
+                stableCount++
+                if (stableCount >= 2) {
+                    log("[转发] 聊天列表已稳定 checks=$checks")
+                    return
+                }
+            } else {
+                stableCount = 0
+            }
+            lastSignature = cur
+            GestureHelper.delayExact(500)
+        }
+        log("[转发] 聊天列表稳定等待结束 checks=$checks stable=$stableCount")
+    }
 
     private fun isSafeLongPressRect(rect: Rect, metrics: DisplayMetrics): Boolean {
         val topSafe = (metrics.heightPixels * 0.18f).toInt()
