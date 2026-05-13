@@ -261,7 +261,6 @@ class CollectorService : Service() {
                             consecutiveErrors++
                             continue
                         }
-                        delay(Config.enterGroupWaitSeconds * 1000L)
 
                         val ok = MessageForwarder.forwardNewMessages(service, metrics, unread)
                         log(if (ok) "✓ 转发完成" else "✗ 转发失败")
