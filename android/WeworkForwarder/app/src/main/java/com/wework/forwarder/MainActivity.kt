@@ -44,7 +44,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnAccessibility: Button
     private lateinit var etSourceGroup: EditText
     private lateinit var etTargetGroups: EditText
-    private lateinit var etLookback: EditText
     private lateinit var etPollInterval: EditText
     private lateinit var etEnterWait: EditText
     private lateinit var btnStart: Button
@@ -137,7 +136,6 @@ class MainActivity : AppCompatActivity() {
         btnAccessibility = findViewById(R.id.btn_accessibility)
         etSourceGroup = findViewById(R.id.et_source_group)
         etTargetGroups = findViewById(R.id.et_target_groups)
-        etLookback = findViewById(R.id.et_lookback)
         etPollInterval = findViewById(R.id.et_poll_interval)
         etEnterWait = findViewById(R.id.et_enter_wait)
         btnStart = findViewById(R.id.btn_start)
@@ -152,7 +150,6 @@ class MainActivity : AppCompatActivity() {
         Storage.loadUserConfig(this)
         etSourceGroup.setText(Config.sourceGroup)
         etTargetGroups.setText(Config.targetGroups.joinToString(","))
-        etLookback.setText(Config.lookbackMinutes.toString())
         etPollInterval.setText(Config.pollIntervalSeconds.toString())
         etEnterWait.setText(Config.enterGroupWaitSeconds.toString())
     }
@@ -241,7 +238,6 @@ class MainActivity : AppCompatActivity() {
             .split(Regex("[,，]"))
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-        Config.lookbackMinutes = etLookback.text.toString().toIntOrNull() ?: 10
         Config.pollIntervalSeconds = etPollInterval.text.toString().toIntOrNull() ?: 30
         Config.enterGroupWaitSeconds = etEnterWait.text.toString().toIntOrNull() ?: 3
 

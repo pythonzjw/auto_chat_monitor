@@ -205,6 +205,7 @@ class CollectorService : Service() {
         log("源群: ${Config.sourceGroup}")
         log("目标群 (${Config.targetGroups.size}个): ${Config.targetGroups.joinToString(", ")}")
         log("轮询间隔: ${Config.pollIntervalSeconds} 秒")
+        log("进群等待: ${Config.enterGroupWaitSeconds} 秒")
         log("单次最大转发: ${Config.maxForwardCount} 条")
         log("========================================")
 

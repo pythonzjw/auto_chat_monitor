@@ -9,7 +9,6 @@ object Config {
     var targetGroups: List<String> = emptyList()
 
     // ===== 时间配置 =====
-    var lookbackMinutes: Int = 10
     var enterGroupWaitSeconds: Int = 3
     var pollIntervalSeconds: Int = 30
 

@@ -1,7 +1,7 @@
 # CONTEXT_HANDOFF
 
 ## 当前目标
-- 提升超屏消息边界、进入消息多选、扩选到底和多批次复定位稳定性：每一批都要回到同一条第一新消息锚点，重新长按、多选、下滑到底再转发。
+- 提升超屏消息边界、进入消息多选、扩选到底和多批次复定位稳定性；清理已废弃的回溯时间配置，并修复进群等待配置持久化。
 
 ## 已完成
 - `MessageForwarder` 改为当前屏不足 `K` 时持续上滑找分割线/时间行边界。
@@ -11,11 +11,20 @@
 - `MessageForwarder` 进入消息多选由单点长按改为锚点消息内多候选点长按：现有坐标、气泡中心、主要文本区域、行安全中心；只有点击“多选”并确认进入多选模式后才继续扩选。
 - `scrollAndSelectToHere()` 去掉 20 次下滑硬上限，改为采集运行期间持续下滑；到底判断从文本 signature 改为列表首尾几何位置 + childCount 连续稳定。
 - 第 2 批及后续批次从源群底部持续上滑复定位第一条新消息锚点，不再使用 30 次固定上限；任一批失败直接返回失败，不再误报“全部完成”。
+- 删除回溯分钟 UI、配置字段、存储字段和旧判断函数；当前转发只按未读数/分割线/时间行定位。
+- `enterGroupWaitSeconds` 已加入用户配置保存/加载，启动日志会打印“进群等待: X 秒”。
 - `TimeParser` 补充 `上午/下午 HH:mm` 解析。
 - 选群逻辑未改。
 
 ## 已修改文件
 - `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageForwarder.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageCollector.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MainActivity.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/Storage.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/CollectorService.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/Config.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/TimeParser.kt`
+- `android/WeworkForwarder/app/src/main/res/layout/activity_main.xml`
 - `CONTEXT_HANDOFF.md`
 
 ## 关键决策
@@ -26,6 +35,7 @@
 - 多批次转发时，发送完一批后企微回到底部是正常状态；后续批次必须从底部上滑找回原锚点，再执行与第一批一致的选择流程。
 - K 只保留“当前屏足够时倒数第 K 条”的快速路径，不做跨屏累计。
 - “找不到多选”按长按坐标不准处理，不改多选按钮选择器；候选点必须来自同一个锚点消息节点并通过安全区过滤，避免全屏乱点。
+- 回溯时间已彻底下线，不再作为用户可配置项或消息过滤条件。
 
 ## 验证情况
 - `git diff --check` 已通过。

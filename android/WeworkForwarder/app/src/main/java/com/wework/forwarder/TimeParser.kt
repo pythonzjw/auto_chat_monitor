@@ -81,12 +81,4 @@ object TimeParser {
 
         return null
     }
-
-    /**
-     * 判断时间是否在回溯范围内
-     */
-    fun isWithinLookback(msgTime: Date, lookbackMinutes: Int): Boolean {
-        val cutoff = Date(System.currentTimeMillis() - lookbackMinutes * 60 * 1000L)
-        return msgTime.time >= cutoff.time
-    }
 }

@@ -86,8 +86,8 @@ object Storage {
             val config = gson.fromJson(file.readText(), UserConfig::class.java) ?: return false
             Config.sourceGroup = config.sourceGroup ?: ""
             Config.targetGroups = config.targetGroups ?: emptyList()
-            Config.lookbackMinutes = config.lookbackMinutes ?: 10
             Config.pollIntervalSeconds = config.pollIntervalSeconds ?: 30
+            Config.enterGroupWaitSeconds = config.enterGroupWaitSeconds ?: 3
             true
         } catch (e: Exception) {
             Log.w(TAG, "加载用户配置失败: ${e.message}")
@@ -104,8 +104,8 @@ object Storage {
             val config = gson.fromJson(file.readText(), UserConfig::class.java) ?: return false
             Config.sourceGroup = config.sourceGroup ?: ""
             Config.targetGroups = config.targetGroups ?: emptyList()
-            Config.lookbackMinutes = config.lookbackMinutes ?: 10
             Config.pollIntervalSeconds = config.pollIntervalSeconds ?: 30
+            Config.enterGroupWaitSeconds = config.enterGroupWaitSeconds ?: 3
             true
         } catch (e: Exception) {
             Log.w(TAG, "加载用户配置失败: ${e.message}")
@@ -117,8 +117,8 @@ object Storage {
         val config = UserConfig(
             sourceGroup = Config.sourceGroup,
             targetGroups = Config.targetGroups,
-            lookbackMinutes = Config.lookbackMinutes,
-            pollIntervalSeconds = Config.pollIntervalSeconds
+            pollIntervalSeconds = Config.pollIntervalSeconds,
+            enterGroupWaitSeconds = Config.enterGroupWaitSeconds
         )
         saveFile(Config.USER_CONFIG_FILE, config)
     }
@@ -216,8 +216,8 @@ object Storage {
     data class UserConfig(
         val sourceGroup: String? = null,
         val targetGroups: List<String>? = null,
-        val lookbackMinutes: Int? = null,
-        val pollIntervalSeconds: Int? = null
+        val pollIntervalSeconds: Int? = null,
+        val enterGroupWaitSeconds: Int? = null
     )
 
     data class ForwardState(
