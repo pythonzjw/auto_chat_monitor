@@ -521,8 +521,9 @@ object MessageCollector {
         val childCount = chatList.childCount
         var currentTime = ""
         val maxFirstRowGap = (listRect.height() * 0.20f).toInt().coerceAtLeast(180)
-        val pressTopSafe = listRect.top + 24
-        val pressBottomSafe = listRect.bottom - 24
+        val screenHeight = service.resources.displayMetrics.heightPixels
+        val pressTopSafe = maxOf(listRect.top + 24, (screenHeight * 0.18f).toInt())
+        val pressBottomSafe = minOf(listRect.bottom - 24, (screenHeight * 0.84f).toInt())
 
         fun isLikelyMessageRow(node: AccessibilityNodeInfo, rect: Rect): Boolean {
             val visibleBelowDivider = minOf(rect.bottom, listRect.bottom) - maxOf(rect.top, minTop)
@@ -588,6 +589,8 @@ object MessageCollector {
                             log("[分割线] 时间行同节点包含消息，接受第一条候选 i=$i rect=$rect bubble=$bubbleRect type=${msg.type}")
                             return FirstNewMessageInfo(msg, node = child, rect = bubbleRect)
                         }
+                        log("[分割线] 时间行同节点消息长按区域不安全，等待回拉 (i=$i, bubble=$bubbleRect, safe=$pressTopSafe..$pressBottomSafe)")
+                        return null
                     }
                     log("[分割线] 跳过时间行 i=$i rect=$rect time=${parsed.time}")
                 }
