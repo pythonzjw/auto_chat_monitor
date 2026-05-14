@@ -288,6 +288,38 @@ object MessageCollector {
             GestureHelper.delayExact(360)
         }
 
+        fun lockedStepTowardNewer() {
+            val w = metrics.widthPixels.toFloat()
+            val h = metrics.heightPixels.toFloat()
+            service.swipe(w / 2, h * 0.535f, w / 2, h * 0.455f, duration = 560)
+            GestureHelper.delayExact(620)
+        }
+
+        fun lockOnTimeBoundary(timeText: String): FirstNewMessageInfo? {
+            repeat(10) { attempt ->
+                if (!CollectorService.isRunning) return null
+                val root = service.getRootNode() ?: return null
+                val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
+                    ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+                    ?: return null
+                val timeBoundary = findVisibleTimeBoundary(chatList, service, timeText)
+                if (timeBoundary == null) {
+                    log("[时间行] 锁定 $timeText 后边界离开可视区，停止普通扫描")
+                    return null
+                }
+                val (lockedText, lockedRect) = timeBoundary
+                val firstNew = findFirstBubbleBelow(chatList, lockedRect.bottom, service)
+                if (firstNew != null) {
+                    log("[时间行] 锁定 $lockedText 后命中 bounds=$lockedRect, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
+                    return firstNew
+                }
+                log("[时间行] 锁定 $lockedText 但下方消息未稳定露出，中步回拉 (${attempt + 1}/10)")
+                lockedStepTowardNewer()
+            }
+            log("[时间行] 锁定时间行后 10 次回拉仍未拿到下方消息，拒绝转发")
+            return null
+        }
+
         var lastSignature = ""
         var stableCount = 0
         var lastDividerBottom: Int? = null
@@ -358,10 +390,8 @@ object MessageCollector {
                     log("[时间行] 命中 $timeText bounds=$timeRect, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
                     return firstNew
                 }
-                log("[时间行] 命中 $timeText 但下方消息未稳定露出, 小幅回拉找下方消息")
-                tinyStepTowardNewer()
-                iter++
-                continue
+                log("[时间行] 命中 $timeText 但下方消息未稳定露出，进入边界锁定回拉")
+                return lockOnTimeBoundary(timeText)
             }
 
             if (stableCount >= 6) {
@@ -410,6 +440,44 @@ object MessageCollector {
             }
         }
         best?.let { log("[时间行] 可视区候选: ${it.first} bounds=${it.second}") }
+        return best
+    }
+
+    private fun findVisibleTimeBoundary(
+        chatList: AccessibilityNodeInfo,
+        service: WeWorkAccessibilityService,
+        targetText: String,
+    ): Pair<String, Rect>? {
+        val screenWidth = service.resources.displayMetrics.widthPixels
+        val halfWidth = screenWidth / 2
+        val listRect = Rect()
+        chatList.getBoundsInScreen(listRect)
+        val safeTop = listRect.top + 24
+        val safeBottom = listRect.bottom - 24
+        var currentTime = ""
+        var best: Pair<String, Rect>? = null
+        var bestY = Int.MIN_VALUE
+
+        for (i in 0 until chatList.childCount) {
+            val child = chatList.getChild(i) ?: continue
+            when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
+                is ParseResult.TimeLabel -> {
+                    currentTime = parsed.time
+                    if (parsed.time == targetText) {
+                        val timeRect = findTimeTextBounds(child, parsed.time)
+                        if (timeRect != null && timeRect.bottom > safeTop && timeRect.top < safeBottom) {
+                            if (timeRect.centerY() > bestY) {
+                                bestY = timeRect.centerY()
+                                best = parsed.time to Rect(timeRect)
+                            }
+                        }
+                    }
+                }
+                is ParseResult.Msg -> Unit
+                is ParseResult.Skip -> Unit
+            }
+        }
+        best?.let { log("[时间行] 锁定可视区候选: ${it.first} bounds=${it.second}") }
         return best
     }
 
