@@ -468,6 +468,7 @@ object MessageForwarder {
         var observedMovement = !needScroll
         var stableCount = 0
         var visibleButtonStillCount = 0
+        var upperButtonStillCount = 0
         var lastTrustedSelectRect: Rect? = null
         var scrollCount = 0
         var noListCount = 0
@@ -514,6 +515,7 @@ object MessageForwarder {
                     && curGeometryKey == lastGeometryKey
             val btn = findSelectToHereDown(service)
             var btnRect: Rect? = null
+            var upperBtnRect: Rect? = null
             val btnY = btn?.let {
                 val rect = Rect()
                 it.getBoundsInScreen(rect)
@@ -523,6 +525,16 @@ object MessageForwarder {
                 }
                 rect.centerY()
             } ?: -1
+            if (btn == null) {
+                val anyBtn = findSelectToHereDown(service, strict = false)
+                if (anyBtn != null) {
+                    val rect = Rect()
+                    anyBtn.getBoundsInScreen(rect)
+                    if (rect.centerY() < metrics.heightPixels / 2) {
+                        upperBtnRect = Rect(rect)
+                    }
+                }
+            }
             log("[转发] scrollSelect i=$scrollCount moved=$moved observed=$observedMovement stable=$stable stableCount=$stableCount bottom=$curBottom count=$curChildCount btnY=$btnY")
 
             if (btnRect != null && stable && !observedMovement) {
@@ -533,6 +545,17 @@ object MessageForwarder {
                 }
             } else if (moved || btnRect == null) {
                 visibleButtonStillCount = 0
+            }
+            if (upperBtnRect != null && stable && !observedMovement) {
+                upperButtonStillCount++
+                log("[转发] 上半屏'选择到这里'可见且列表未移动，第 ${upperButtonStillCount} 轮")
+                if (upperButtonStillCount >= 3) {
+                    upperBtnRect?.let {
+                        return clickSelectRect(it, "上半屏按钮持续可见且列表无移动，按到底兜底")
+                    }
+                }
+            } else if (moved || upperBtnRect == null) {
+                upperButtonStillCount = 0
             }
 
             if (stable && observedMovement) {
@@ -955,7 +978,7 @@ object MessageForwarder {
         var scroll = 0
         var bottomStableCount = 0
         while (scroll <= 60) {
-            if (stopped()) return selectedCount > 0
+            if (stopped()) return false
             if (pending.isEmpty()) break
 
             val root = service.getRootNode()
@@ -998,7 +1021,7 @@ object MessageForwarder {
 
             var matchedThisScreen = 0
             for (target in visibleTargets) {
-                if (stopped()) return selectedCount > 0
+                if (stopped()) return false
                 if (target.name !in pending) continue
 
                 val beforeCount = readSelectedCount(service.getRootNode())
@@ -1061,6 +1084,9 @@ object MessageForwarder {
                     .take(10).joinToString(", ") { "\"${it.text.take(20)}\"" }
                 log("[选群] 页面文本: $summary")
             }
+            log("[选群] 共勾选 $selectedCount/${pending.size + selectedCount}")
+            log("[选群] ✗ 未全量选中，拒绝部分发送")
+            return false
         }
 
         log("[选群] 共勾选 $selectedCount/${pending.size + selectedCount}")
