@@ -284,8 +284,16 @@ object MessageCollector {
         fun lockedStepTowardNewer() {
             val w = metrics.widthPixels.toFloat()
             val h = metrics.heightPixels.toFloat()
-            service.swipe(w / 2, h * 0.535f, w / 2, h * 0.455f, duration = 560)
-            GestureHelper.delayExact(620)
+            // 边界已锁定后只做小步微调，避免一次惯性把时间行/分割线滑出可视区。
+            service.swipe(w / 2, h * 0.525f, w / 2, h * 0.505f, duration = 860)
+            GestureHelper.delayExact(520)
+        }
+
+        fun lockedStepTowardOlder() {
+            val w = metrics.widthPixels.toFloat()
+            val h = metrics.heightPixels.toFloat()
+            service.swipe(w / 2, h * 0.505f, w / 2, h * 0.525f, duration = 860)
+            GestureHelper.delayExact(520)
         }
 
         data class BoundaryHit(
@@ -295,7 +303,7 @@ object MessageCollector {
             val chatList: AccessibilityNodeInfo,
         )
 
-        fun findLockedBoundary(kind: String): BoundaryHit? {
+        fun findLockedBoundary(kind: String, expectedText: String): BoundaryHit? {
             val root = service.getRootNode() ?: return null
             val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
                 ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
@@ -309,43 +317,38 @@ object MessageCollector {
                 divider.getBoundsInScreen(rect)
                 return BoundaryHit(kind = "分割线", text = dividerText, rect = rect, chatList = chatList)
             }
-            val timeBoundary = findMiddleTimeBoundary(chatList, service) ?: return null
+            val timeBoundary = findVisibleTimeBoundaryByText(chatList, service, expectedText) ?: return null
             return BoundaryHit(kind = "时间行", text = timeBoundary.first, rect = timeBoundary.second, chatList = chatList)
         }
 
         fun lockOnBoundary(initial: BoundaryHit): FirstNewMessageInfo? {
             val lockedKind = initial.kind
-            var lastBoundaryRect = Rect(initial.rect)
-            repeat(16) { attempt ->
+            repeat(24) { attempt ->
                 if (!CollectorService.isRunning) return null
-                val locked = findLockedBoundary(lockedKind)
+                val locked = findLockedBoundary(lockedKind, initial.text)
                 val chatList = locked?.chatList ?: run {
                     val root = service.getRootNode() ?: return null
                     NodeFinder.findByClassName(root, "android.widget.ListView")
                         ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
                         ?: return null
                 }
-                val listRect = Rect()
-                chatList.getBoundsInScreen(listRect)
-                val minTop = if (locked != null) {
-                    lastBoundaryRect = Rect(locked.rect)
-                    locked.rect.bottom
-                } else {
-                    // 边界已被回拉到可视区上方时，旧消息在屏外，顶部第一条可见消息就是边界下方消息。
-                    log("[边界] ${lockedKind} 已离开可视区，改用顶部首条可见消息尝试取锚点")
-                    listRect.top + 1
+                if (locked == null) {
+                    log("[边界] ${lockedKind} 已离开可视区，小步反向找回边界 (${attempt + 1}/24)")
+                    lockedStepTowardOlder()
+                    return@repeat
                 }
+                val minTop = locked.rect.bottom
                 val firstNew = findFirstBubbleBelow(chatList, minTop, service)
                 if (firstNew != null) {
-                    val boundaryText = locked?.text ?: "上方边界"
-                    val boundaryRect = locked?.rect ?: lastBoundaryRect
+                    val boundaryText = locked.text
+                    val boundaryRect = locked.rect
                     log("[边界] 锁定 $lockedKind($boundaryText) 后命中 bounds=$boundaryRect, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
                     return firstNew
                 }
-                log("[边界] 锁定 $lockedKind 但下方消息未稳定露出，中步回拉 (${attempt + 1}/16)")
+                log("[边界] 锁定 $lockedKind 但下方消息未稳定露出，小步回拉 (${attempt + 1}/24)")
                 lockedStepTowardNewer()
             }
-            log("[边界] 锁定边界后 16 次回拉仍未拿到下方消息，拒绝转发")
+            log("[边界] 锁定边界后 24 次回拉仍未拿到下方消息，拒绝转发")
             return null
         }
 
@@ -467,6 +470,40 @@ object MessageCollector {
         }
         best?.let { log("[时间行] 可视区候选: ${it.first} bounds=${it.second}") }
         return best
+    }
+
+    private fun findVisibleTimeBoundaryByText(
+        chatList: AccessibilityNodeInfo,
+        service: WeWorkAccessibilityService,
+        expectedText: String,
+    ): Pair<String, Rect>? {
+        val screenWidth = service.resources.displayMetrics.widthPixels
+        val halfWidth = screenWidth / 2
+        val listRect = Rect()
+        chatList.getBoundsInScreen(listRect)
+        val safeTop = listRect.top + 24
+        val safeBottom = listRect.bottom - 24
+        var currentTime = ""
+
+        for (i in 0 until chatList.childCount) {
+            val child = chatList.getChild(i) ?: continue
+            val rect = Rect()
+            child.getBoundsInScreen(rect)
+            when (val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)) {
+                is ParseResult.TimeLabel -> {
+                    currentTime = parsed.time
+                    if (parsed.time != expectedText) continue
+                    val timeRect = findTimeTextBounds(child, parsed.time) ?: rect
+                    if (timeRect.bottom > safeTop && timeRect.top < safeBottom) {
+                        return parsed.time to Rect(timeRect)
+                    }
+                    return null
+                }
+                is ParseResult.Msg -> Unit
+                is ParseResult.Skip -> Unit
+            }
+        }
+        return null
     }
 
     private fun findTimeTextBounds(

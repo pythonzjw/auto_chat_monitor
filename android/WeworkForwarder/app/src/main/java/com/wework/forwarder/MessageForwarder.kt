@@ -566,11 +566,14 @@ object MessageForwarder {
                     if (finalBtn != null) {
                         val r = Rect()
                         finalBtn.getBoundsInScreen(r)
-                        return clickSelectRect(r, "到底了")
+                        if (r.centerY() > metrics.heightPixels / 2) {
+                            return clickSelectRect(r, "到底了")
+                        }
+                        log("[转发] 已确认到底但当前'选择到这里'在上半屏(y=${r.centerY()})，不点击反向按钮")
                     }
-                    log("[转发] 已确认到底但找不到'选择到这里'按钮，swipeUp 小幅回拉后重试")
+                    log("[转发] 已确认到底但找不到底部'选择到这里'按钮，swipeUp 小幅回拉后重试")
                     GestureHelper.swipeUp(service, metrics)
-                    val retryBtn = findSelectToHereDown(service, strict = false)
+                    val retryBtn = findSelectToHereDown(service)
                     if (retryBtn != null) {
                         val r = Rect()
                         retryBtn.getBoundsInScreen(r)
@@ -676,6 +679,14 @@ object MessageForwarder {
             log("[转发] 选择'逐条转发' (${rect.centerX()}, ${rect.centerY()})")
             service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
             GestureHelper.delay(1500)
+        }
+        val contactPage = waitForNodeInAllWindows(service, 5000) { r ->
+            NodeFinder.findByText(r, "选择联系人")
+                ?: NodeFinder.findByText(r, "最近聊天")
+        }
+        if (contactPage == null) {
+            log("[转发] 点击转发后未确认进入选群页面")
+            return false
         }
         return true
     }
