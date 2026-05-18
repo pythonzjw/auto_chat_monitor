@@ -281,18 +281,28 @@ object MessageCollector {
             }
         }
 
-        fun lockedStepTowardNewer() {
+        fun lockedStepTowardNewer(level: Int = 0) {
             val w = metrics.widthPixels.toFloat()
             val h = metrics.heightPixels.toFloat()
             // 边界已锁定后只做小步微调，避免一次惯性把时间行/分割线滑出可视区。
-            service.swipe(w / 2, h * 0.525f, w / 2, h * 0.505f, duration = 860)
+            val delta = when (level.coerceIn(0, 2)) {
+                0 -> 0.025f
+                1 -> 0.050f
+                else -> 0.075f
+            }
+            service.swipe(w / 2, h * 0.535f, w / 2, h * (0.535f - delta), duration = 820)
             GestureHelper.delayExact(520)
         }
 
-        fun lockedStepTowardOlder() {
+        fun lockedStepTowardOlder(level: Int = 0) {
             val w = metrics.widthPixels.toFloat()
             val h = metrics.heightPixels.toFloat()
-            service.swipe(w / 2, h * 0.505f, w / 2, h * 0.525f, duration = 860)
+            val delta = when (level.coerceIn(0, 2)) {
+                0 -> 0.025f
+                1 -> 0.050f
+                else -> 0.075f
+            }
+            service.swipe(w / 2, h * 0.505f, w / 2, h * (0.505f + delta), duration = 820)
             GestureHelper.delayExact(520)
         }
 
@@ -323,7 +333,11 @@ object MessageCollector {
 
         fun lockOnBoundary(initial: BoundaryHit): FirstNewMessageInfo? {
             val lockedKind = initial.kind
-            repeat(24) { attempt ->
+            var lastBubbleY: Int? = null
+            var noProgressCount = 0
+            var adjustLevel = 0
+            var boundaryLostCount = 0
+            for (attempt in 0 until 24) {
                 if (!CollectorService.isRunning) return null
                 val locked = findLockedBoundary(lockedKind, initial.text)
                 val chatList = locked?.chatList ?: run {
@@ -333,20 +347,55 @@ object MessageCollector {
                         ?: return null
                 }
                 if (locked == null) {
+                    boundaryLostCount++
+                    if (boundaryLostCount > 1) {
+                        log("[边界] ${lockedKind} 第 ${boundaryLostCount} 次离开可视区，停止抖动并拒绝转发")
+                        return null
+                    }
                     log("[边界] ${lockedKind} 已离开可视区，小步反向找回边界 (${attempt + 1}/24)")
                     lockedStepTowardOlder()
-                    return@repeat
+                    continue
                 }
+                boundaryLostCount = 0
                 val minTop = locked.rect.bottom
-                val firstNew = findFirstBubbleBelow(chatList, minTop, service)
-                if (firstNew != null) {
-                    val boundaryText = locked.text
-                    val boundaryRect = locked.rect
-                    log("[边界] 锁定 $lockedKind($boundaryText) 后命中 bounds=$boundaryRect, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
-                    return firstNew
+                when (val located = locateFirstBubbleBelow(chatList, minTop, service)) {
+                    is BubbleLocateResult.Safe -> {
+                        val firstNew = located.info
+                        log("[边界] 锁定 $lockedKind(${locked.text}) 后命中 bounds=${locked.rect}, 锚点: ${firstNew.message.sender}: ${firstNew.message.content.take(30)}")
+                        return firstNew
+                    }
+                    is BubbleLocateResult.TooLow -> {
+                        val bubbleY = located.bubbleRect.centerY()
+                        val hasProgress = lastBubbleY == null || bubbleY < lastBubbleY!! - 10
+                        noProgressCount = if (hasProgress) 0 else noProgressCount + 1
+                        if (noProgressCount >= 3) {
+                            if (adjustLevel < 2) {
+                                adjustLevel++
+                                noProgressCount = 0
+                            } else {
+                                log("[边界] candidateState=TOO_LOW 连续无进展，停止抖动并拒绝转发 bubbleY=$bubbleY safeBottom=${located.safeBottom}")
+                                return null
+                            }
+                        }
+                        log("[边界] candidateState=TOO_LOW bubbleY=$bubbleY safeBottom=${located.safeBottom} delta=${bubbleY - located.safeBottom} adjustStep=$adjustLevel (${attempt + 1}/24)")
+                        lastBubbleY = bubbleY
+                        lockedStepTowardNewer(adjustLevel)
+                    }
+                    is BubbleLocateResult.TooHigh -> {
+                        val bubbleY = located.bubbleRect.centerY()
+                        log("[边界] candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=${located.safeTop} delta=${located.safeTop - bubbleY} adjustStep=0 (${attempt + 1}/24)")
+                        lastBubbleY = bubbleY
+                        lockedStepTowardOlder()
+                    }
+                    is BubbleLocateResult.ParsePending -> {
+                        log("[边界] candidateState=PARSE_PENDING reason=${located.reason}，继续小步回拉 (${attempt + 1}/24)")
+                        lockedStepTowardNewer(adjustLevel)
+                    }
+                    BubbleLocateResult.Missing -> {
+                        log("[边界] candidateState=MISSING，继续小步回拉 (${attempt + 1}/24)")
+                        lockedStepTowardNewer(adjustLevel)
+                    }
                 }
-                log("[边界] 锁定 $lockedKind 但下方消息未稳定露出，小步回拉 (${attempt + 1}/24)")
-                lockedStepTowardNewer()
             }
             log("[边界] 锁定边界后 24 次回拉仍未拿到下方消息，拒绝转发")
             return null
@@ -539,6 +588,17 @@ object MessageCollector {
         minTop: Int,
         service: WeWorkAccessibilityService,
     ): FirstNewMessageInfo? {
+        return when (val located = locateFirstBubbleBelow(chatList, minTop, service)) {
+            is BubbleLocateResult.Safe -> located.info
+            else -> null
+        }
+    }
+
+    private fun locateFirstBubbleBelow(
+        chatList: AccessibilityNodeInfo,
+        minTop: Int,
+        service: WeWorkAccessibilityService,
+    ): BubbleLocateResult {
         val screenWidth = service.resources.displayMetrics.widthPixels
         val halfWidth = screenWidth / 2
         val listRect = Rect()
@@ -548,7 +608,21 @@ object MessageCollector {
         val maxFirstRowGap = (listRect.height() * 0.20f).toInt().coerceAtLeast(180)
         val screenHeight = service.resources.displayMetrics.heightPixels
         val pressTopSafe = maxOf(listRect.top + 24, (screenHeight * 0.18f).toInt())
-        val pressBottomSafe = minOf(listRect.bottom - 24, (screenHeight * 0.84f).toInt())
+        val pressBottomSafe = minOf(listRect.bottom - 96, (screenHeight * 0.92f).toInt())
+
+        fun locateState(
+            info: FirstNewMessageInfo,
+            bubbleRect: Rect,
+            reason: String,
+        ): BubbleLocateResult {
+            val cy = bubbleRect.centerY()
+            return when {
+                cy <= minTop + 8 -> BubbleLocateResult.ParsePending(reason)
+                cy < pressTopSafe -> BubbleLocateResult.TooHigh(info, bubbleRect, pressTopSafe, pressBottomSafe)
+                cy > pressBottomSafe -> BubbleLocateResult.TooLow(info, bubbleRect, pressTopSafe, pressBottomSafe)
+                else -> BubbleLocateResult.Safe(info)
+            }
+        }
 
         fun isLikelyMessageRow(node: AccessibilityNodeInfo, rect: Rect): Boolean {
             val visibleBelowDivider = minOf(rect.bottom, listRect.bottom) - maxOf(rect.top, minTop)
@@ -609,13 +683,15 @@ object MessageCollector {
                     currentTime = parsed.time
                     if (isLikelyMessageRow(child, rect)) {
                         val bubbleRect = pickBubbleRectBelow(child, minTop)
-                        if (bubbleRect.centerY() > minTop + 8 && bubbleRect.centerY() in pressTopSafe..pressBottomSafe) {
-                            val msg = buildFallbackMessage(child, parsed.time)
+                        val msg = buildFallbackMessage(child, parsed.time)
+                        val info = FirstNewMessageInfo(msg, node = child, rect = bubbleRect)
+                        val located = locateState(info, bubbleRect, "time_same_node")
+                        if (located is BubbleLocateResult.Safe) {
                             log("[分割线] 时间行同节点包含消息，接受第一条候选 i=$i rect=$rect bubble=$bubbleRect type=${msg.type}")
-                            return FirstNewMessageInfo(msg, node = child, rect = bubbleRect)
+                        } else {
+                            log("[分割线] 时间行同节点消息长按区域不安全，等待回拉 (i=$i, bubble=$bubbleRect, safe=$pressTopSafe..$pressBottomSafe)")
                         }
-                        log("[分割线] 时间行同节点消息长按区域不安全，等待回拉 (i=$i, bubble=$bubbleRect, safe=$pressTopSafe..$pressBottomSafe)")
-                        return null
+                        return located
                     }
                     log("[分割线] 跳过时间行 i=$i rect=$rect time=${parsed.time}")
                 }
@@ -624,11 +700,11 @@ object MessageCollector {
                     // 视为底部边缘的"裁剪到无法解析的卡片",触发 swipeDown
                     if (rect.bottom >= listRect.bottom - 10 && i < childCount - 1) {
                         log("[分割线] ListView 底部边缘有 Skip 节点 (bottom=${rect.bottom}, listBottom=${listRect.bottom}), 疑似被裁剪到无法解析的卡片, swipeDown 重试")
-                        return null
+                        return BubbleLocateResult.ParsePending("bottom_skip")
                     }
                     if (isLikelyMessageRow(child, rect)) {
                         log("[分割线] 第一条疑似消息解析失败，不跳到后续消息，swipeDown 重试 (i=$i, rect=$rect, texts=${textSummary(child)})")
-                        return null
+                        return BubbleLocateResult.ParsePending("likely_message_parse_failed")
                     }
                     continue
                 }
@@ -636,7 +712,7 @@ object MessageCollector {
                     val gap = rect.top - minTop
                     if (gap > maxFirstRowGap) {
                         log("[分割线] 首个可解析消息离分割线过远，拒绝跳到后续消息 (i=$i, gap=$gap, max=$maxFirstRowGap, rect=$rect)")
-                        return null
+                        return BubbleLocateResult.ParsePending("first_row_gap_too_large")
                     }
                     // v2.4.10: 仅对 card 类型(小程序/链接/文件等)做完整可见性检查
                     // 文字气泡(text/link)和图片(image)直接长按即可,不需要完全可见
@@ -647,24 +723,26 @@ object MessageCollector {
                         val notFullyVisible = visibleHeight * 4 < rect.height() * 3  // 可见<75%
                         if (clippedBeyond > 50 || atListEdge || notFullyVisible) {
                             log("[分割线] 第一条是卡片(${parsed.message.content.take(20)}) 未完整显示 (rect=$rect, listBottom=${listRect.bottom}, visibleHeight=$visibleHeight/${rect.height()}), swipeDown 重试")
-                            return null
+                            return BubbleLocateResult.ParsePending("card_not_fully_visible")
                         }
                     }
                     val bubbleRect = pickBubbleRectBelow(child, minTop)
-                    if (bubbleRect.centerY() <= minTop + 8) {
+                    val info = FirstNewMessageInfo(parsed.message, node = child, rect = bubbleRect)
+                    val located = locateState(info, bubbleRect, "message_bubble")
+                    if (located is BubbleLocateResult.ParsePending) {
                         log("[分割线] 气泡中心仍在分割线附近，等待微调 (i=$i, bubble=$bubbleRect, minTop=$minTop)")
-                        return null
+                        return located
                     }
-                    if (bubbleRect.centerY() !in pressTopSafe..pressBottomSafe) {
+                    if (located !is BubbleLocateResult.Safe) {
                         log("[分割线] 气泡长按区域不安全，等待微调 (i=$i, bubble=$bubbleRect, safe=$pressTopSafe..$pressBottomSafe)")
-                        return null
+                        return located
                     }
                     log("[分割线] 接受第一条候选 i=$i rect=$rect bubble=$bubbleRect type=${parsed.message.type}")
-                    return FirstNewMessageInfo(parsed.message, node = child, rect = bubbleRect)
+                    return located
                 }
             }
         }
-        return null
+        return BubbleLocateResult.Missing
     }
 
     /**
@@ -1453,5 +1531,23 @@ object MessageCollector {
         data class TimeLabel(val time: String) : ParseResult()
         data class Msg(val message: Storage.Message) : ParseResult()
         object Skip : ParseResult()
+    }
+
+    private sealed class BubbleLocateResult {
+        data class Safe(val info: FirstNewMessageInfo) : BubbleLocateResult()
+        data class TooLow(
+            val info: FirstNewMessageInfo,
+            val bubbleRect: Rect,
+            val safeTop: Int,
+            val safeBottom: Int,
+        ) : BubbleLocateResult()
+        data class TooHigh(
+            val info: FirstNewMessageInfo,
+            val bubbleRect: Rect,
+            val safeTop: Int,
+            val safeBottom: Int,
+        ) : BubbleLocateResult()
+        data class ParsePending(val reason: String) : BubbleLocateResult()
+        object Missing : BubbleLocateResult()
     }
 }
