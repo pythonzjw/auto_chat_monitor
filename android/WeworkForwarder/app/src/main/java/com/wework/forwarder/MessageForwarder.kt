@@ -199,7 +199,7 @@ object MessageForwarder {
 
     private fun isSafeLongPressRect(rect: Rect, metrics: DisplayMetrics): Boolean {
         val topSafe = (metrics.heightPixels * 0.18f).toInt()
-        val bottomSafe = (metrics.heightPixels * 0.92f).toInt()
+        val bottomSafe = (metrics.heightPixels * 0.94f).toInt()
         return rect.centerY() in topSafe..bottomSafe
     }
 
