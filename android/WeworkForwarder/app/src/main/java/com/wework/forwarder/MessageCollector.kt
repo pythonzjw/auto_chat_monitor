@@ -338,6 +338,7 @@ object MessageCollector {
             var adjustLevel = 0
             var boundaryLostCount = 0
             var sawCandidate = false
+            var lastCandidate: FirstNewMessageInfo? = null
             for (attempt in 0 until 24) {
                 if (!CollectorService.isRunning) return null
                 val locked = findLockedBoundary(lockedKind, initial.text)
@@ -348,6 +349,29 @@ object MessageCollector {
                         ?: return null
                 }
                 if (locked == null) {
+                    val candidate = lastCandidate?.message?.let { findItemBySignature(chatList, it, service) }
+                    val candidateRect = candidate?.rect
+                    if (candidate != null && candidateRect != null) {
+                        when (val relocated = locateExistingCandidate(candidate, candidateRect, chatList, service)) {
+                            is BubbleLocateResult.Safe -> {
+                                log("[边界] ${lockedKind} 离开可视区，但候选消息已进入可长按区 bubble=${candidateRect}")
+                                return relocated.info
+                            }
+                            is BubbleLocateResult.TooLow -> {
+                                val bubbleY = relocated.bubbleRect.centerY()
+                                log("[边界] ${lockedKind} 离开可视区，继续按候选消息上移 candidateState=TOO_LOW bubbleY=$bubbleY safeBottom=${relocated.safeBottom} (${attempt + 1}/24)")
+                                lockedStepTowardNewer(adjustLevel)
+                                continue
+                            }
+                            is BubbleLocateResult.TooHigh -> {
+                                val bubbleY = relocated.bubbleRect.centerY()
+                                log("[边界] ${lockedKind} 离开可视区，候选消息过高 candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=${relocated.safeTop} (${attempt + 1}/24)")
+                                lockedStepTowardOlder()
+                                continue
+                            }
+                            else -> Unit
+                        }
+                    }
                     boundaryLostCount++
                     val maxLost = if (sawCandidate) 3 else 1
                     if (boundaryLostCount > maxLost) {
@@ -368,6 +392,7 @@ object MessageCollector {
                     }
                     is BubbleLocateResult.TooLow -> {
                         sawCandidate = true
+                        lastCandidate = located.info
                         val bubbleY = located.bubbleRect.centerY()
                         val hasProgress = lastBubbleY == null || bubbleY < lastBubbleY!! - 10
                         noProgressCount = if (hasProgress) 0 else noProgressCount + 1
@@ -386,6 +411,7 @@ object MessageCollector {
                     }
                     is BubbleLocateResult.TooHigh -> {
                         sawCandidate = true
+                        lastCandidate = located.info
                         val bubbleY = located.bubbleRect.centerY()
                         log("[边界] candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=${located.safeTop} delta=${located.safeTop - bubbleY} adjustStep=0 (${attempt + 1}/24)")
                         lastBubbleY = bubbleY
@@ -612,8 +638,8 @@ object MessageCollector {
         val maxFirstRowGap = (listRect.height() * 0.20f).toInt().coerceAtLeast(180)
         val screenHeight = service.resources.displayMetrics.heightPixels
         val pressTopSafe = maxOf(listRect.top + 24, (screenHeight * 0.18f).toInt())
-        val screenBottomSafe = (screenHeight * 0.94f).toInt()
-        val pressBottomSafe = minOf(listRect.bottom - 8, screenBottomSafe)
+        val identifyBottomSafe = minOf(listRect.bottom - 8, (screenHeight * 0.94f).toInt())
+        val longPressBottomSafe = minOf(listRect.bottom - 120, (screenHeight * 0.88f).toInt())
 
         fun locateState(
             info: FirstNewMessageInfo,
@@ -625,8 +651,9 @@ object MessageCollector {
             return when {
                 cy <= minTop + 8 -> BubbleLocateResult.ParsePending(reason)
                 visibleHeight < 24 -> BubbleLocateResult.ParsePending("${reason}_too_clipped")
-                cy < pressTopSafe -> BubbleLocateResult.TooHigh(info, bubbleRect, pressTopSafe, pressBottomSafe)
-                cy > pressBottomSafe -> BubbleLocateResult.TooLow(info, bubbleRect, pressTopSafe, pressBottomSafe)
+                cy < pressTopSafe -> BubbleLocateResult.TooHigh(info, bubbleRect, pressTopSafe, longPressBottomSafe)
+                cy > identifyBottomSafe -> BubbleLocateResult.ParsePending("${reason}_outside_list_bottom")
+                cy > longPressBottomSafe -> BubbleLocateResult.TooLow(info, bubbleRect, pressTopSafe, longPressBottomSafe)
                 else -> BubbleLocateResult.Safe(info)
             }
         }
@@ -694,9 +721,9 @@ object MessageCollector {
                         val info = FirstNewMessageInfo(msg, node = child, rect = bubbleRect)
                         val located = locateState(info, bubbleRect, "time_same_node")
                         if (located is BubbleLocateResult.Safe) {
-                            log("[分割线] candidateState=SAFE 时间行同节点包含消息 i=$i rect=$rect bubble=$bubbleRect acceptBottom=$pressBottomSafe listBottom=${listRect.bottom} screenBottomSafe=$screenBottomSafe type=${msg.type}")
+                            log("[分割线] candidateState=SAFE 时间行同节点包含消息 i=$i rect=$rect bubble=$bubbleRect longPressBottom=$longPressBottomSafe identifyBottom=$identifyBottomSafe listBottom=${listRect.bottom} type=${msg.type}")
                         } else {
-                            log("[分割线] 时间行同节点消息长按区域不安全，等待回拉 (i=$i, bubble=$bubbleRect, safe=$pressTopSafe..$pressBottomSafe, listBottom=${listRect.bottom}, screenBottomSafe=$screenBottomSafe)")
+                            log("[分割线] 时间行同节点消息已识别但不可长按，等待上移 (i=$i, bubble=$bubbleRect, longPressSafe=$pressTopSafe..$longPressBottomSafe, identifyBottom=$identifyBottomSafe, listBottom=${listRect.bottom})")
                         }
                         return located
                     }
@@ -741,15 +768,36 @@ object MessageCollector {
                         return located
                     }
                     if (located !is BubbleLocateResult.Safe) {
-                        log("[分割线] 气泡长按区域不安全，等待微调 (i=$i, bubble=$bubbleRect, safe=$pressTopSafe..$pressBottomSafe, listBottom=${listRect.bottom}, screenBottomSafe=$screenBottomSafe)")
+                        log("[分割线] 气泡已识别但不可长按，等待微调 (i=$i, bubble=$bubbleRect, longPressSafe=$pressTopSafe..$longPressBottomSafe, identifyBottom=$identifyBottomSafe, listBottom=${listRect.bottom})")
                         return located
                     }
-                    log("[分割线] candidateState=SAFE 接受第一条候选 i=$i rect=$rect bubble=$bubbleRect acceptBottom=$pressBottomSafe listBottom=${listRect.bottom} screenBottomSafe=$screenBottomSafe type=${parsed.message.type}")
+                    log("[分割线] candidateState=SAFE 接受第一条候选 i=$i rect=$rect bubble=$bubbleRect longPressBottom=$longPressBottomSafe identifyBottom=$identifyBottomSafe listBottom=${listRect.bottom} type=${parsed.message.type}")
                     return located
                 }
             }
         }
         return BubbleLocateResult.Missing
+    }
+
+    private fun locateExistingCandidate(
+        info: FirstNewMessageInfo,
+        bubbleRect: Rect,
+        chatList: AccessibilityNodeInfo,
+        service: WeWorkAccessibilityService,
+    ): BubbleLocateResult {
+        val listRect = Rect()
+        chatList.getBoundsInScreen(listRect)
+        val screenHeight = service.resources.displayMetrics.heightPixels
+        val pressTopSafe = maxOf(listRect.top + 24, (screenHeight * 0.18f).toInt())
+        val pressBottomSafe = minOf(listRect.bottom - 120, (screenHeight * 0.88f).toInt())
+        val cy = bubbleRect.centerY()
+        val visibleHeight = minOf(bubbleRect.bottom, listRect.bottom) - maxOf(bubbleRect.top, listRect.top)
+        return when {
+            visibleHeight < 24 -> BubbleLocateResult.ParsePending("relocated_too_clipped")
+            cy < pressTopSafe -> BubbleLocateResult.TooHigh(info, bubbleRect, pressTopSafe, pressBottomSafe)
+            cy > pressBottomSafe -> BubbleLocateResult.TooLow(info, bubbleRect, pressTopSafe, pressBottomSafe)
+            else -> BubbleLocateResult.Safe(info)
+        }
     }
 
     /**

@@ -199,7 +199,7 @@ object MessageForwarder {
 
     private fun isSafeLongPressRect(rect: Rect, metrics: DisplayMetrics): Boolean {
         val topSafe = (metrics.heightPixels * 0.18f).toInt()
-        val bottomSafe = (metrics.heightPixels * 0.94f).toInt()
+        val bottomSafe = (metrics.heightPixels * 0.88f).toInt()
         return rect.centerY() in topSafe..bottomSafe
     }
 
@@ -279,7 +279,7 @@ object MessageForwarder {
                 log("[转发] 跳过越界长按点 $source bounds=$rect row=$rowRect")
                 return
             }
-            if (cx < metrics.widthPixels * 0.08f || cy > metrics.heightPixels * 0.94f) {
+            if (cx < metrics.widthPixels * 0.08f || cy > metrics.heightPixels * 0.90f) {
                 log("[转发] 跳过头像/底栏附近长按点 $source bounds=$rect")
                 return
             }
