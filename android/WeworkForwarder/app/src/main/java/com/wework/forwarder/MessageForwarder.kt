@@ -297,13 +297,19 @@ object MessageForwarder {
             addCandidate("bubbleCenter", findBubbleRect(node))
             addCandidate("textCenter", findMainTextRect(node))
             rowRect?.let { row ->
-                val x = pressInfo.rect?.centerX()
-                    ?: findBubbleRect(node).centerX()
-                val y = row.centerY().coerceIn(
-                    (metrics.heightPixels * 0.20f).toInt(),
-                    (metrics.heightPixels * 0.82f).toInt()
-                )
-                addCandidate("rowSafeCenter", rectAround(x, y))
+                // 行兜底只能在行本身有足够高度时使用，避免把点强行夹到行外导致长按空白。
+                if (row.height() >= 120) {
+                    val x = pressInfo.rect?.centerX()
+                        ?: findBubbleRect(node).centerX()
+                    val rowY = row.centerY().coerceIn(row.top + 30, row.bottom - 30)
+                    val screenY = rowY.coerceIn(
+                        (metrics.heightPixels * 0.20f).toInt(),
+                        (metrics.heightPixels * 0.88f).toInt()
+                    )
+                    if (screenY in (row.top + 20)..(row.bottom - 20)) {
+                        addCandidate("rowSafeCenter", rectAround(x, screenY))
+                    }
+                }
             }
         }
         return result.take(4)

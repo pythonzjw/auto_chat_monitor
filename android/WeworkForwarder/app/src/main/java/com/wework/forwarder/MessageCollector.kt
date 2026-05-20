@@ -313,6 +313,18 @@ object MessageCollector {
             val chatList: AccessibilityNodeInfo,
         )
 
+        data class CandidateLock(
+            val key: String,
+            var lastInfo: FirstNewMessageInfo,
+            var lastRect: Rect,
+        )
+
+        fun currentChatList(): AccessibilityNodeInfo? {
+            val root = service.getRootNode() ?: return null
+            return NodeFinder.findByClassName(root, "android.widget.ListView")
+                ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
+        }
+
         fun findLockedBoundary(kind: String, expectedText: String): BoundaryHit? {
             val root = service.getRootNode() ?: return null
             val chatList = NodeFinder.findByClassName(root, "android.widget.ListView")
@@ -337,48 +349,87 @@ object MessageCollector {
             var noProgressCount = 0
             var adjustLevel = 0
             var boundaryLostCount = 0
-            var sawCandidate = false
-            var lastCandidate: FirstNewMessageInfo? = null
-            for (attempt in 0 until 24) {
-                if (!CollectorService.isRunning) return null
-                val locked = findLockedBoundary(lockedKind, initial.text)
-                val chatList = locked?.chatList ?: run {
-                    val root = service.getRootNode() ?: return null
-                    NodeFinder.findByClassName(root, "android.widget.ListView")
-                        ?: NodeFinder.findByClassName(root, "androidx.recyclerview.widget.RecyclerView")
-                        ?: return null
+            var lockedCandidate: CandidateLock? = null
+
+            fun rememberCandidate(info: FirstNewMessageInfo, bubbleRect: Rect, reason: String) {
+                val key = buildMessageContentKey(info.message)
+                if (key.isBlank()) return
+                if (lockedCandidate == null || lockedCandidate?.key != key) {
+                    log("[边界] 已锁定候选消息 key=${key.take(18)} reason=$reason，后续不再依赖$lockedKind可见")
                 }
-                if (locked == null) {
-                    val candidate = lastCandidate?.message?.let { findItemBySignature(chatList, it, service) }
+                lockedCandidate = CandidateLock(key = key, lastInfo = info, lastRect = Rect(bubbleRect))
+            }
+
+            fun stepCandidateUp(bubbleY: Int, safeBottom: Int, attempt: Int) {
+                val hasProgress = lastBubbleY == null || bubbleY < lastBubbleY!! - 10
+                noProgressCount = if (hasProgress) 0 else noProgressCount + 1
+                if (noProgressCount >= 3 && adjustLevel < 2) {
+                    adjustLevel++
+                    noProgressCount = 0
+                }
+                val delta = bubbleY - safeBottom
+                val stepLevel = maxOf(
+                    adjustLevel,
+                    when {
+                        delta > 160 -> 2
+                        delta > 60 -> 1
+                        else -> 0
+                    }
+                )
+                log("[边界] messageLocked candidateState=TOO_LOW bubbleY=$bubbleY safeBottom=$safeBottom delta=$delta adjustStep=$stepLevel (${attempt + 1}/36)")
+                lastBubbleY = bubbleY
+                lockedStepTowardNewer(stepLevel)
+            }
+
+            for (attempt in 0 until 36) {
+                if (!CollectorService.isRunning) return null
+                val candidateLock = lockedCandidate
+                if (candidateLock != null) {
+                    val chatList = currentChatList() ?: return null
+                    val candidate = findItemByContentKey(chatList, candidateLock.key, service, candidateLock.lastRect)
                     val candidateRect = candidate?.rect
-                    if (candidate != null && candidateRect != null) {
-                        when (val relocated = locateExistingCandidate(candidate, candidateRect, chatList, service)) {
-                            is BubbleLocateResult.Safe -> {
-                                log("[边界] ${lockedKind} 离开可视区，但候选消息已进入可长按区 bubble=${candidateRect}")
-                                return relocated.info
-                            }
-                            is BubbleLocateResult.TooLow -> {
-                                val bubbleY = relocated.bubbleRect.centerY()
-                                log("[边界] ${lockedKind} 离开可视区，继续按候选消息上移 candidateState=TOO_LOW bubbleY=$bubbleY safeBottom=${relocated.safeBottom} (${attempt + 1}/24)")
-                                lockedStepTowardNewer(adjustLevel)
-                                continue
-                            }
-                            is BubbleLocateResult.TooHigh -> {
-                                val bubbleY = relocated.bubbleRect.centerY()
-                                log("[边界] ${lockedKind} 离开可视区，候选消息过高 candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=${relocated.safeTop} (${attempt + 1}/24)")
-                                lockedStepTowardOlder()
-                                continue
-                            }
-                            else -> Unit
+                    if (candidate == null || candidateRect == null) {
+                        log("[边界] messageLocked 当前屏未命中候选 key=${candidateLock.key.take(18)}，继续单向上移 (${attempt + 1}/36)")
+                        lockedStepTowardNewer(adjustLevel)
+                        continue
+                    }
+                    candidateLock.lastInfo = candidate
+                    candidateLock.lastRect = Rect(candidateRect)
+                    when (val relocated = locateExistingCandidate(candidate, candidateRect, chatList, service)) {
+                        is BubbleLocateResult.Safe -> {
+                            log("[边界] messageLocked 候选消息进入可长按区 bubble=$candidateRect，锚点: ${candidate.message.sender}: ${candidate.message.content.take(30)}")
+                            return relocated.info
+                        }
+                        is BubbleLocateResult.TooLow -> {
+                            stepCandidateUp(relocated.bubbleRect.centerY(), relocated.safeBottom, attempt)
+                        }
+                        is BubbleLocateResult.TooHigh -> {
+                            val bubbleY = relocated.bubbleRect.centerY()
+                            log("[边界] messageLocked candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=${relocated.safeTop} (${attempt + 1}/36)")
+                            lastBubbleY = bubbleY
+                            lockedStepTowardOlder(0)
+                        }
+                        is BubbleLocateResult.ParsePending -> {
+                            log("[边界] messageLocked candidateState=PARSE_PENDING reason=${relocated.reason}，继续单向上移 (${attempt + 1}/36)")
+                            lockedStepTowardNewer(adjustLevel)
+                        }
+                        BubbleLocateResult.Missing -> {
+                            log("[边界] messageLocked candidateState=MISSING，继续单向上移 (${attempt + 1}/36)")
+                            lockedStepTowardNewer(adjustLevel)
                         }
                     }
+                    continue
+                }
+
+                val locked = findLockedBoundary(lockedKind, initial.text)
+                val chatList = locked?.chatList ?: currentChatList() ?: return null
+                if (locked == null) {
                     boundaryLostCount++
-                    val maxLost = if (sawCandidate) 3 else 1
-                    if (boundaryLostCount > maxLost) {
+                    if (boundaryLostCount > 1) {
                         log("[边界] ${lockedKind} 第 ${boundaryLostCount} 次离开可视区，停止抖动并拒绝转发")
                         return null
                     }
-                    log("[边界] ${lockedKind} 已离开可视区，小步反向找回边界 (${attempt + 1}/24)")
+                    log("[边界] ${lockedKind} 已离开可视区，小步反向找回边界 (${attempt + 1}/36)")
                     lockedStepTowardOlder()
                     continue
                 }
@@ -391,43 +442,28 @@ object MessageCollector {
                         return firstNew
                     }
                     is BubbleLocateResult.TooLow -> {
-                        sawCandidate = true
-                        lastCandidate = located.info
                         val bubbleY = located.bubbleRect.centerY()
-                        val hasProgress = lastBubbleY == null || bubbleY < lastBubbleY!! - 10
-                        noProgressCount = if (hasProgress) 0 else noProgressCount + 1
-                        if (noProgressCount >= 3) {
-                            if (adjustLevel < 2) {
-                                adjustLevel++
-                                noProgressCount = 0
-                            } else {
-                                log("[边界] candidateState=TOO_LOW 连续无进展，停止抖动并拒绝转发 bubbleY=$bubbleY safeBottom=${located.safeBottom}")
-                                return null
-                            }
-                        }
-                        log("[边界] candidateState=TOO_LOW bubbleY=$bubbleY safeBottom=${located.safeBottom} delta=${bubbleY - located.safeBottom} adjustStep=$adjustLevel (${attempt + 1}/24)")
-                        lastBubbleY = bubbleY
-                        lockedStepTowardNewer(adjustLevel)
+                        rememberCandidate(located.info, located.bubbleRect, "too_low")
+                        stepCandidateUp(bubbleY, located.safeBottom, attempt)
                     }
                     is BubbleLocateResult.TooHigh -> {
-                        sawCandidate = true
-                        lastCandidate = located.info
                         val bubbleY = located.bubbleRect.centerY()
-                        log("[边界] candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=${located.safeTop} delta=${located.safeTop - bubbleY} adjustStep=0 (${attempt + 1}/24)")
+                        rememberCandidate(located.info, located.bubbleRect, "too_high")
+                        log("[边界] messageLocked candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=${located.safeTop} delta=${located.safeTop - bubbleY} adjustStep=0 (${attempt + 1}/36)")
                         lastBubbleY = bubbleY
                         lockedStepTowardOlder()
                     }
                     is BubbleLocateResult.ParsePending -> {
-                        log("[边界] candidateState=PARSE_PENDING reason=${located.reason}，继续小步回拉 (${attempt + 1}/24)")
+                        log("[边界] candidateState=PARSE_PENDING reason=${located.reason}，继续小步回拉 (${attempt + 1}/36)")
                         lockedStepTowardNewer(adjustLevel)
                     }
                     BubbleLocateResult.Missing -> {
-                        log("[边界] candidateState=MISSING，继续小步回拉 (${attempt + 1}/24)")
+                        log("[边界] candidateState=MISSING，继续小步回拉 (${attempt + 1}/36)")
                         lockedStepTowardNewer(adjustLevel)
                     }
                 }
             }
-            log("[边界] 锁定边界后 24 次回拉仍未拿到下方消息，拒绝转发")
+            log("[边界] 锁定边界/候选消息后 36 次微调仍未拿到安全长按点，拒绝转发")
             return null
         }
 
@@ -867,6 +903,114 @@ object MessageCollector {
             iter++
         }
         return null
+    }
+
+    private fun normalizeMatchText(text: String): String {
+        return text
+            .replace(Regex("\\s+"), "")
+            .trim()
+    }
+
+    private fun stripKeyDecorations(text: String): String {
+        return text
+            .trim()
+            .replace(Regex("^\\[[^]]+]\\s*"), "")
+            .replace(Regex("^(起风了💭|群成员|我)[:：]\\s*"), "")
+            .trim()
+    }
+
+    private fun isNoiseKeyPart(text: String): Boolean {
+        val s = stripKeyDecorations(text)
+        return s.isBlank()
+                || isTimeLabel(s)
+                || isSystemMessage(s)
+                || isUiElement(s)
+                || s == "群成员"
+                || s == "我"
+                || s == "起风了💭"
+                || s == "＠微信"
+                || s == "@微信"
+                || s in CARD_LABELS
+                || Regex("^[@＠].+").matches(s)
+    }
+
+    /**
+     * 候选消息锁定用的内容指纹。
+     *
+     * 时间行和第一条消息可能被企微合并在同一个 ListView 子节点里，parseListItem 会返回 TimeLabel。
+     * 这里避开发送人、@微信、时间、卡片标签等噪声，取真实内容片段用于后续复定位。
+     */
+    private fun buildMessageContentKey(message: Storage.Message): String {
+        val rawParts = message.content
+            .split("/", "\n", "\r")
+            .flatMap { it.split(Regex("\\s{2,}")) }
+            .map { stripKeyDecorations(it) }
+            .filter { it.length >= 3 && !isNoiseKeyPart(it) }
+        val strippedFull = stripKeyDecorations(message.content)
+        val part = rawParts.firstOrNull()
+            ?: (if (strippedFull.isNotBlank()) strippedFull else message.content).take(32)
+        return normalizeMatchText(part).take(32)
+    }
+
+    private fun contentMatchTexts(node: AccessibilityNodeInfo): List<String> {
+        return NodeFinder.getAllTexts(node)
+            .map { stripKeyDecorations(it.text.trim()) }
+            .filter { it.length >= 2 && !isNoiseKeyPart(it) }
+    }
+
+    private fun isContentKeyMatched(rowTexts: List<String>, message: Storage.Message, key: String): Boolean {
+        val normalizedKey = normalizeMatchText(key)
+        if (normalizedKey.length < 2) return false
+        val rowText = normalizeMatchText(rowTexts.joinToString("/"))
+        val messageKey = buildMessageContentKey(message)
+        return rowText.contains(normalizedKey)
+                || (rowText.length >= 3 && normalizedKey.contains(rowText))
+                || messageKey.contains(normalizedKey)
+                || (messageKey.length >= 3 && normalizedKey.contains(messageKey))
+    }
+
+    private fun findItemByContentKey(
+        chatList: AccessibilityNodeInfo,
+        contentKey: String,
+        service: WeWorkAccessibilityService,
+        preferRect: Rect?,
+    ): FirstNewMessageInfo? {
+        val key = normalizeMatchText(contentKey)
+        if (key.length < 2) return null
+        val screenWidth = service.resources.displayMetrics.widthPixels
+        val halfWidth = screenWidth / 2
+        val listRect = Rect()
+        chatList.getBoundsInScreen(listRect)
+        var currentTime = ""
+        val matches = mutableListOf<Pair<Int, FirstNewMessageInfo>>()
+
+        for (i in 0 until chatList.childCount) {
+            val child = chatList.getChild(i) ?: continue
+            val rowRect = Rect()
+            child.getBoundsInScreen(rowRect)
+            if (rowRect.bottom <= listRect.top || rowRect.top >= listRect.bottom) continue
+
+            val rowTexts = contentMatchTexts(child)
+            val parsed = parseListItem(child, halfWidth, screenWidth, currentTime)
+            val message = when (parsed) {
+                is ParseResult.TimeLabel -> {
+                    currentTime = parsed.time
+                    buildFallbackMessage(child, parsed.time)
+                }
+                is ParseResult.Msg -> parsed.message
+                is ParseResult.Skip -> buildFallbackMessage(child, currentTime)
+            }
+            if (rowTexts.isEmpty() && message.content.isBlank()) continue
+            if (!isContentKeyMatched(rowTexts, message, key)) continue
+
+            val bubbleRect = pickBubbleRectBelow(child, rowRect.top - 1)
+            val info = FirstNewMessageInfo(message, node = child, rect = bubbleRect)
+            val distance = preferRect?.let {
+                kotlin.math.abs(rowRect.centerY() - it.centerY())
+            } ?: i
+            matches.add(distance to info)
+        }
+        return matches.minByOrNull { it.first }?.second
     }
 
     private fun findItemBySignature(
