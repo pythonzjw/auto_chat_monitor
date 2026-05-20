@@ -355,7 +355,7 @@ object MessageCollector {
                 val key = buildMessageContentKey(info.message)
                 if (key.isBlank()) return
                 if (lockedCandidate == null || lockedCandidate?.key != key) {
-                    log("[边界] 已锁定候选消息 key=${key.take(18)} reason=$reason，后续不再依赖$lockedKind可见")
+                    log("[边界] 已锁定候选消息 key=${key.take(18)} reason=$reason，后续不再依赖${lockedKind}可见")
                 }
                 lockedCandidate = CandidateLock(key = key, lastInfo = info, lastRect = Rect(bubbleRect))
             }

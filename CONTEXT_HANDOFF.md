@@ -26,6 +26,7 @@
 ## 验证情况
 - `git diff --check` 已通过。
 - 本地 `./gradlew assembleDebug` 未成功：当前机器无 Java Runtime，报错 `Unable to locate a Java Runtime`。
+- CI `v2.4.49` 首次失败原因：Kotlin 字符串插值 `$lockedKind可见` 被解析成变量名；已改为 `${lockedKind}可见`。
 
 ## 下一步
 - 真机重点看日志是否出现：`已锁定候选消息`、`messageLocked candidateState=TOO_LOW`、最终 `messageLocked 候选消息进入可长按区`。
