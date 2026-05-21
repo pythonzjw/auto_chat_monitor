@@ -12,6 +12,10 @@
   - 微调次数从 24 提升到 36，且按 `bubbleY-safeBottom` 自动加大微调步长。
 - 本轮修改 `MessageForwarder.buildLongPressCandidates()`：
   - `rowSafeCenter` 只在行高度足够且安全点仍落在原行内时加入，避免把兜底点夹到行外空白区域。
+- 2026-05-21 修复第三轮转发失败：
+  - 候选锁定 key 改为正文强 key（长度至少 6，取最长正文片段），不再用 `花月仙` 这类短噪声锁定。
+  - `pickBubbleRectBelow()` 对小高度/零高度控件做保护，避免 `coerceIn` 空区间崩溃。
+  - `TooHigh` 回拉按偏移量动态加大步长，避免滑过时间行后下拉幅度太小。
 
 ## 已修改文件
 - `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageCollector.kt`
@@ -27,6 +31,7 @@
 - `git diff --check` 已通过。
 - 本地 `./gradlew assembleDebug` 未成功：当前机器无 Java Runtime，报错 `Unable to locate a Java Runtime`。
 - CI `v2.4.49` 首次失败原因：Kotlin 字符串插值 `$lockedKind可见` 被解析成变量名；已改为 `${lockedKind}可见`。
+- 待提交后触发新 CI 验证 2026-05-21 修复。
 
 ## 下一步
 - 真机重点看日志是否出现：`已锁定候选消息`、`messageLocked candidateState=TOO_LOW`、最终 `messageLocked 候选消息进入可长按区`。

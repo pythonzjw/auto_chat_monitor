@@ -26,6 +26,13 @@ object MessageCollector {
         val key: String,
     )
 
+    private data class ContentMatchInfo(
+        val distance: Int,
+        val node: AccessibilityNodeInfo,
+        val message: Storage.Message,
+        val rowRect: Rect,
+    )
+
     private fun log(msg: String) {
         Log.d(TAG, msg)
         Config.uiLog?.invoke(msg)
@@ -353,7 +360,10 @@ object MessageCollector {
 
             fun rememberCandidate(info: FirstNewMessageInfo, bubbleRect: Rect, reason: String) {
                 val key = buildMessageContentKey(info.message)
-                if (key.isBlank()) return
+                if (key.isBlank()) {
+                    log("[边界] 候选消息正文未充分露出，暂不锁定短 key，reason=$reason content=${info.message.content.take(24)}")
+                    return
+                }
                 if (lockedCandidate == null || lockedCandidate?.key != key) {
                     log("[边界] 已锁定候选消息 key=${key.take(18)} reason=$reason，后续不再依赖${lockedKind}可见")
                 }
@@ -381,6 +391,18 @@ object MessageCollector {
                 lockedStepTowardNewer(stepLevel)
             }
 
+            fun stepCandidateDown(bubbleY: Int, safeTop: Int, attempt: Int) {
+                val delta = safeTop - bubbleY
+                val stepLevel = when {
+                    delta > 160 -> 2
+                    delta > 60 -> 1
+                    else -> 0
+                }
+                log("[边界] messageLocked candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=$safeTop delta=$delta adjustStep=$stepLevel (${attempt + 1}/36)")
+                lastBubbleY = bubbleY
+                lockedStepTowardOlder(stepLevel)
+            }
+
             for (attempt in 0 until 36) {
                 if (!CollectorService.isRunning) return null
                 val candidateLock = lockedCandidate
@@ -404,10 +426,7 @@ object MessageCollector {
                             stepCandidateUp(relocated.bubbleRect.centerY(), relocated.safeBottom, attempt)
                         }
                         is BubbleLocateResult.TooHigh -> {
-                            val bubbleY = relocated.bubbleRect.centerY()
-                            log("[边界] messageLocked candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=${relocated.safeTop} (${attempt + 1}/36)")
-                            lastBubbleY = bubbleY
-                            lockedStepTowardOlder(0)
+                            stepCandidateDown(relocated.bubbleRect.centerY(), relocated.safeTop, attempt)
                         }
                         is BubbleLocateResult.ParsePending -> {
                             log("[边界] messageLocked candidateState=PARSE_PENDING reason=${relocated.reason}，继续单向上移 (${attempt + 1}/36)")
@@ -449,9 +468,7 @@ object MessageCollector {
                     is BubbleLocateResult.TooHigh -> {
                         val bubbleY = located.bubbleRect.centerY()
                         rememberCandidate(located.info, located.bubbleRect, "too_high")
-                        log("[边界] messageLocked candidateState=TOO_HIGH bubbleY=$bubbleY safeTop=${located.safeTop} delta=${located.safeTop - bubbleY} adjustStep=0 (${attempt + 1}/36)")
-                        lastBubbleY = bubbleY
-                        lockedStepTowardOlder()
+                        stepCandidateDown(bubbleY, located.safeTop, attempt)
                     }
                     is BubbleLocateResult.ParsePending -> {
                         log("[边界] candidateState=PARSE_PENDING reason=${located.reason}，继续小步回拉 (${attempt + 1}/36)")
@@ -945,11 +962,10 @@ object MessageCollector {
             .split("/", "\n", "\r")
             .flatMap { it.split(Regex("\\s{2,}")) }
             .map { stripKeyDecorations(it) }
-            .filter { it.length >= 3 && !isNoiseKeyPart(it) }
-        val strippedFull = stripKeyDecorations(message.content)
-        val part = rawParts.firstOrNull()
-            ?: (if (strippedFull.isNotBlank()) strippedFull else message.content).take(32)
-        return normalizeMatchText(part).take(32)
+            .map { normalizeMatchText(it) }
+            .filter { it.length >= 6 && !isNoiseKeyPart(it) }
+        val part = rawParts.maxByOrNull { it.length } ?: return ""
+        return part.take(32)
     }
 
     private fun contentMatchTexts(node: AccessibilityNodeInfo): List<String> {
@@ -960,13 +976,13 @@ object MessageCollector {
 
     private fun isContentKeyMatched(rowTexts: List<String>, message: Storage.Message, key: String): Boolean {
         val normalizedKey = normalizeMatchText(key)
-        if (normalizedKey.length < 2) return false
+        if (normalizedKey.length < 6) return false
         val rowText = normalizeMatchText(rowTexts.joinToString("/"))
         val messageKey = buildMessageContentKey(message)
         return rowText.contains(normalizedKey)
-                || (rowText.length >= 3 && normalizedKey.contains(rowText))
+                || (rowText.length >= 6 && normalizedKey.contains(rowText))
                 || messageKey.contains(normalizedKey)
-                || (messageKey.length >= 3 && normalizedKey.contains(messageKey))
+                || (messageKey.length >= 6 && normalizedKey.contains(messageKey))
     }
 
     private fun findItemByContentKey(
@@ -976,13 +992,13 @@ object MessageCollector {
         preferRect: Rect?,
     ): FirstNewMessageInfo? {
         val key = normalizeMatchText(contentKey)
-        if (key.length < 2) return null
+        if (key.length < 6) return null
         val screenWidth = service.resources.displayMetrics.widthPixels
         val halfWidth = screenWidth / 2
         val listRect = Rect()
         chatList.getBoundsInScreen(listRect)
         var currentTime = ""
-        val matches = mutableListOf<Pair<Int, FirstNewMessageInfo>>()
+        val matches = mutableListOf<ContentMatchInfo>()
 
         for (i in 0 until chatList.childCount) {
             val child = chatList.getChild(i) ?: continue
@@ -1003,14 +1019,14 @@ object MessageCollector {
             if (rowTexts.isEmpty() && message.content.isBlank()) continue
             if (!isContentKeyMatched(rowTexts, message, key)) continue
 
-            val bubbleRect = pickBubbleRectBelow(child, rowRect.top - 1)
-            val info = FirstNewMessageInfo(message, node = child, rect = bubbleRect)
             val distance = preferRect?.let {
                 kotlin.math.abs(rowRect.centerY() - it.centerY())
             } ?: i
-            matches.add(distance to info)
+            matches.add(ContentMatchInfo(distance, child, message, Rect(rowRect)))
         }
-        return matches.minByOrNull { it.first }?.second
+        val best = matches.minByOrNull { it.distance } ?: return null
+        val bubbleRect = pickBubbleRectBelow(best.node, best.rowRect.top - 1)
+        return FirstNewMessageInfo(best.message, node = best.node, rect = bubbleRect)
     }
 
     private fun findItemBySignature(
@@ -1056,6 +1072,18 @@ object MessageCollector {
         val itemRect = Rect()
         listItem.getBoundsInScreen(itemRect)
 
+        fun safePressY(rect: Rect, minY: Int, preferTopThird: Boolean): Int? {
+            val top = maxOf(rect.top, minY)
+            val bottom = rect.bottom
+            if (rect.width() <= 0 || bottom <= top) return null
+            val height = bottom - top
+            val margin = minOf(20, maxOf(4, height / 4))
+            val low = top + margin
+            val high = bottom - margin
+            val preferred = if (preferTopThird) top + height / 3 else top + height / 2
+            return if (low <= high) preferred.coerceIn(low, high) else top + height / 2
+        }
+
         // 在 listItem 内找 clickable 气泡(排除头像 ImageView)
         val candidates = NodeFinder.findAll(listItem) {
             it.isClickable
@@ -1064,13 +1092,13 @@ object MessageCollector {
         }.mapNotNull { node ->
             val r = Rect()
             node.getBoundsInScreen(r)
-            if (r.bottom > minTop && r.height() >= 30 && r.width() >= 80) r else null
+            if (r.bottom > minTop && r.height() >= 24 && r.width() >= 80) r else null
         }
         val bubble = candidates.maxByOrNull { it.width() * it.height() }
 
         if (bubble != null) {
-            val cy = (maxOf(bubble.top, minTop) + bubble.height() / 3)
-                .coerceIn(bubble.top + 20, bubble.bottom - 20)
+            val cy = safePressY(bubble, minTop, preferTopThird = true)
+                ?: ((maxOf(bubble.top, minTop) + bubble.bottom) / 2)
             log("[分割线坐标] 找到气泡 bounds=$bubble, 计划长按 (${bubble.centerX()}, $cy)")
             return Rect(bubble.centerX() - 40, cy - 20, bubble.centerX() + 40, cy + 20)
         }
@@ -1078,18 +1106,30 @@ object MessageCollector {
         // 兜底: 取 listItem 中非空 TextView 的位置(排除时间标签)
         val timeRegex = Regex("^\\d{1,2}:\\d{2}(:\\d{2})?$")
         val textRect = NodeFinder.getAllTexts(listItem)
-            .filter { it.text.isNotBlank() && !timeRegex.matches(it.text.trim()) && it.bounds.bottom > minTop }
+            .filter {
+                it.text.isNotBlank()
+                    && !timeRegex.matches(it.text.trim())
+                    && it.bounds.bottom > minTop
+                    && it.bounds.width() > 0
+                    && it.bounds.height() > 0
+            }
             .maxByOrNull { it.bounds.width() * it.bounds.height() }
             ?.bounds
         if (textRect != null) {
-            val cy = (maxOf(textRect.top, minTop) + 30).coerceAtMost(textRect.bottom - 10)
+            val cy = safePressY(textRect, minTop, preferTopThird = false)
+                ?: ((maxOf(textRect.top, minTop) + textRect.bottom) / 2)
             log("[分割线坐标] 文本兜底 bounds=$textRect, 计划长按 (${textRect.centerX()}, $cy)")
             return Rect(textRect.centerX() - 40, cy - 20, textRect.centerX() + 40, cy + 20)
         }
 
         // 终极兜底: 分割线下方 + 行节点中心
         val effectiveTop = maxOf(itemRect.top, minTop)
-        val targetY = (effectiveTop + 100).coerceIn(effectiveTop + 30, itemRect.bottom - 30)
+        val effectiveBottom = maxOf(itemRect.bottom, effectiveTop + 1)
+        val targetY = if (effectiveBottom - effectiveTop >= 80) {
+            (effectiveTop + 100).coerceIn(effectiveTop + 30, effectiveBottom - 30)
+        } else {
+            (effectiveTop + effectiveBottom) / 2
+        }
         val cx = itemRect.centerX()
         log("[分割线坐标] 终极兜底 itemRect=$itemRect, 计划长按 ($cx, $targetY)")
         return Rect(cx - 40, targetY - 20, cx + 40, targetY + 20)
