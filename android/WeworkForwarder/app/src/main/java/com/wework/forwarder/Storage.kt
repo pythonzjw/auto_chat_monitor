@@ -228,7 +228,10 @@ object Storage {
 
     data class LicenseCache(
         val machineCode: String = "",
-        val lastVerifiedAt: Long = 0L
+        val lastVerifiedAt: Long = 0L,
+        val sessionId: String = "",
+        val leaseToken: String = "",
+        val leaseSeconds: Int = 0
     )
 
     fun saveLicense(cache: LicenseCache) {

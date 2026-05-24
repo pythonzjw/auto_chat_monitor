@@ -1,8 +1,6 @@
 package com.wework.forwarder
 
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -16,7 +14,6 @@ import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
@@ -54,7 +51,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var scrollLog: ScrollView
 
     private var licenseLoopJob: Job? = null
-    private var licenseDeniedShown = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,7 +71,7 @@ class MainActivity : AppCompatActivity() {
                     startLicenseKeepAlive()
                 }
                 is LicenseManager.Result.Denied -> {
-                    showLicenseDeniedDialog(r.machineCode, r.msg)
+                    handleLicenseDenied(r.msg)
                 }
             }
         }
@@ -91,14 +87,10 @@ class MainActivity : AppCompatActivity() {
             while (isActive) {
                 delay(LicenseManager.KEEPALIVE_INTERVAL_MS)
                 when (val r = LicenseManager.verify(this@MainActivity)) {
-                    is LicenseManager.Result.Ok -> Log.i(TAG, "[授权] 6h 保活通过")
+                    is LicenseManager.Result.Ok -> Log.i(TAG, "[授权] 保活通过")
                     is LicenseManager.Result.Denied -> {
-                        Log.w(TAG, "[授权] 6h 保活失败: ${r.msg}")
-                        if (CollectorService.isRunning) {
-                            CollectorService.requestStop()
-                            stopService(Intent(this@MainActivity, CollectorService::class.java))
-                        }
-                        runOnUiThread { showLicenseDeniedDialog(r.machineCode, r.msg) }
+                        Log.w(TAG, "[授权] 保活失败，静默停止: ${r.msg}")
+                        handleLicenseDenied(r.msg)
                         return@launch
                     }
                 }
@@ -106,24 +98,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 授权失败 — 不可取消的 AlertDialog,显示机器码,提供"复制机器码"和"退出"
-     */
-    private fun showLicenseDeniedDialog(machineCode: String, msg: String) {
-        if (licenseDeniedShown) return
-        licenseDeniedShown = true
-        AlertDialog.Builder(this)
-            .setTitle("未授权")
-            .setMessage("$msg\n\n机器码:\n$machineCode\n\n请把机器码发给管理员激活")
-            .setCancelable(false)
-            .setPositiveButton("复制机器码") { _, _ ->
-                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("machine_code", machineCode))
-                Toast.makeText(this, "机器码已复制", Toast.LENGTH_SHORT).show()
-                finish()
-            }
-            .setNegativeButton("退出") { _, _ -> finish() }
-            .show()
+    /** 授权失败时不提示用户，只静默停止采集并关闭界面。 */
+    private fun handleLicenseDenied(msg: String) {
+        Log.w(TAG, "[授权] 静默拒绝: $msg")
+        if (CollectorService.isRunning) {
+            CollectorService.requestStop()
+            stopService(Intent(this, CollectorService::class.java))
+        }
+        finish()
     }
 
     override fun onResume() {

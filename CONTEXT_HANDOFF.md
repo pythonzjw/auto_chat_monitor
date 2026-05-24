@@ -1,42 +1,37 @@
 # CONTEXT_HANDOFF
 
 ## 当前目标
-- 稳定从企微群聊内“分割线/时间行”下方第一条新消息开始多选，并一直扩选到最新消息；未读数只作为触发进群信号。
+- Android 客户端从旧 `5002 /verify?code=` 白名单授权切到统一授权中心 `5003 /api/verify`，并支持静默失败、60 秒心跳、请求签名和 release 混淆。
 
 ## 已完成
-- 当前正式可用基线曾标记到 `v2.4.48`；问题集中在时间行靠近底部时，第一条新消息已识别但长按点仍在底部不安全区。
-- 本轮修改 `MessageCollector.findFirstNewMessageByDivider()`：
-  - 命中分割线/时间行并识别到下方候选消息后，立即进入 `messageLocked` 模式。
-  - `messageLocked` 使用真实内容片段作为 key 复定位候选消息，不再要求原时间行/分割线继续可见。
-  - 候选消息低于长按安全区时只按候选消息单向上移；避免围绕时间行“上滑一下、下滑一下”的抖动。
-  - 微调次数从 24 提升到 36，且按 `bubbleY-safeBottom` 自动加大微调步长。
-- 本轮修改 `MessageForwarder.buildLongPressCandidates()`：
-  - `rowSafeCenter` 只在行高度足够且安全点仍落在原行内时加入，避免把兜底点夹到行外空白区域。
-- 2026-05-21 修复第三轮转发失败：
-  - 候选锁定 key 改为正文强 key（长度至少 6，取最长正文片段），不再用 `花月仙` 这类短噪声锁定。
-  - `pickBubbleRectBelow()` 对小高度/零高度控件做保护，避免 `coerceIn` 空区间崩溃。
-  - `TooHigh` 回拉按偏移量动态加大步长，避免滑过时间行后下拉幅度太小。
+- `LicenseManager` 改为 POST 统一授权中心，携带 `project_key/machine_id/session_id/lease_token/timestamp/nonce/signature`。
+- 本地保存并复用 `session_id/lease_token/lease_seconds`。
+- 保活间隔改为 60 秒。
+- 授权失败不弹窗、不 toast；静默停止采集并关闭界面。
+- release 开启 R8/ProGuard 混淆和资源压缩，并保留 Gson JSON 字段与 Android 组件入口。
 
 ## 已修改文件
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageCollector.kt`
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageForwarder.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/Config.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/LicenseManager.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MainActivity.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/Storage.kt`
+- `android/WeworkForwarder/app/build.gradle.kts`
+- `android/WeworkForwarder/app/proguard-rules.pro`
 - `CONTEXT_HANDOFF.md`
 
 ## 关键决策
-- 看到边界下方第一条候选消息后，后续定位以“消息本身”为准，不再回头找时间行/分割线。
-- 仍然不使用 K 计数兜底，避免未读数不准确时误转旧消息。
-- 选群逻辑本轮不动。
+- 客户端签名 payload 与授权中心一致：`project_key\nmachine_id\nsession_id\nlease_token\ntimestamp\nnonce`。
+- 客户端失败关闭，不做离线宽限。
+- 授权中心地址：`http://47.116.98.81:5003/api/verify`。
 
 ## 验证情况
-- `git diff --check` 已通过。
-- 本地 `./gradlew assembleDebug` 未成功：当前机器无 Java Runtime，报错 `Unable to locate a Java Runtime`。
-- CI `v2.4.49` 首次失败原因：Kotlin 字符串插值 `$lockedKind可见` 被解析成变量名；已改为 `${lockedKind}可见`。
-- 待提交后触发新 CI 验证 2026-05-21 修复。
+- `git diff --check` 通过。
+- 本机无法执行 Gradle 编译：无 Java Runtime，`./gradlew :app:assembleRelease` 报 `Unable to locate a Java Runtime`。
+- 线上授权中心接口已用 smoke 数据验证 10 台限制、续租、错误签名；smoke 数据已清理。
 
 ## 下一步
-- 真机重点看日志是否出现：`已锁定候选消息`、`messageLocked candidateState=TOO_LOW`、最终 `messageLocked 候选消息进入可长按区`。
-- 若编译需用 CI 或安装 JDK 17 后验证。
+- 在 CI 或安装 JDK 17 的机器上构建 release APK。
+- 真机验证：首次启动自动授权、60 秒心跳、授权失败无提示且不启动采集、采集转发原流程正常。
 
 ## 已知问题
-- CI 只能验证编译，不能证明企微无障碍 UI 行为正确。
-- `1.jpg` 是未跟踪文件，不应提交。
+- `1.jpg` 是未跟踪文件，不属于本次授权改造。

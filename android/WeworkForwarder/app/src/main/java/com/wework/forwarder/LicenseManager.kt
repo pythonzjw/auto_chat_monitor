@@ -7,27 +7,26 @@ import android.util.Log
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
+import java.util.UUID
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 /**
- * 云端机器码授权
+ * 统一授权中心在线授权
  *
- * - 机器码 = ANDROID_ID(无权限,设备级,卸载重装不变,恢复出厂会变)
- * - 启动时校验 + 运行中每 6 小时保活复检
- * - 任意一次 ok=false 立即拦截
- * - 网络异常时:本地缓存 6 小时宽限期内放行,超时拦截
+ * - 机器码 = ANDROID_ID
+ * - 启动时校验 + 运行中每 60 秒心跳续租
+ * - 授权失败静默拒绝，不向用户展示原因
  */
 object LicenseManager {
 
     private const val TAG = "LicenseMgr"
 
-    /** 网络异常时本地缓存的最大宽限,= 保活间隔 */
-    private const val OFFLINE_GRACE_MS = 6L * 3600 * 1000
-
-    /** 保活校验间隔,MainActivity 起循环用 */
-    const val KEEPALIVE_INTERVAL_MS = 6L * 3600 * 1000
+    /** 保活校验间隔 */
+    const val KEEPALIVE_INTERVAL_MS = 60L * 1000
 
     private const val CONNECT_TIMEOUT_MS = 5000
     private const val READ_TIMEOUT_MS = 5000
@@ -45,65 +44,114 @@ object LicenseManager {
             ?: "unknown"
     }
 
-    /**
-     * 调用云端校验,返回 Ok / Denied
-     *
-     * 顺序:联网校验 → 失败时读本地缓存判断是否在 6h 宽限期内
-     */
+    /** 调用统一授权中心校验，失败时静默返回 Denied。 */
     suspend fun verify(context: Context): Result {
         val code = getMachineCode(context)
-        val now = System.currentTimeMillis()
-
         return try {
-            val resp = withContext(Dispatchers.IO) { httpGetVerify(code) }
+            val cache = Storage.loadLicense()
+            val resp = withContext(Dispatchers.IO) {
+                httpPostVerify(
+                    code = code,
+                    sessionId = cache?.sessionId.orEmpty(),
+                    leaseToken = cache?.leaseToken.orEmpty()
+                )
+            }
             if (resp.ok) {
-                Storage.saveLicense(Storage.LicenseCache(code, now))
-                Log.i(TAG, "[授权] 云端校验通过: $code")
+                Storage.saveLicense(
+                    Storage.LicenseCache(
+                        machineCode = code,
+                        lastVerifiedAt = System.currentTimeMillis(),
+                        sessionId = resp.session_id.orEmpty(),
+                        leaseToken = resp.lease_token.orEmpty(),
+                        leaseSeconds = resp.lease_seconds ?: 0
+                    )
+                )
+                Log.i(TAG, "[授权] 统一授权中心通过: $code")
                 Result.Ok
             } else {
-                Storage.clearLicense()
-                val msg = resp.msg ?: "未授权"
-                Log.w(TAG, "[授权] 云端拒绝: $msg")
-                Result.Denied(code, msg)
+                Log.w(TAG, "[授权] 统一授权中心拒绝: ${resp.reason ?: resp.msg ?: "denied"}")
+                Result.Denied(code, resp.reason ?: resp.msg ?: "denied")
             }
         } catch (e: Exception) {
-            // 网络异常 → 6h 宽限内放过
-            val cache = Storage.loadLicense()
-            if (cache != null && cache.machineCode == code &&
-                now - cache.lastVerifiedAt < OFFLINE_GRACE_MS) {
-                Log.w(TAG, "[授权] 网络异常,本地宽限期内放行: ${e.message}")
-                Result.Ok
-            } else {
-                Log.w(TAG, "[授权] 网络异常且无有效缓存: ${e.message}")
-                Result.Denied(code, "网络不可用且本地授权已过期: ${e.message}")
-            }
+            Log.w(TAG, "[授权] 校验异常: ${e.message}")
+            Result.Denied(code, e.message ?: "verify_error")
         }
     }
 
-    private fun httpGetVerify(code: String): VerifyResponse {
-        val url = URL("${Config.LICENSE_BASE_URL}/verify?code=${URLEncoder.encode(code, "UTF-8")}")
-        val conn = url.openConnection() as HttpURLConnection
+    private fun httpPostVerify(code: String, sessionId: String, leaseToken: String): VerifyResponse {
+        val timestamp = System.currentTimeMillis() / 1000L
+        val nonce = UUID.randomUUID().toString().replace("-", "")
+        val signature = sign(
+            projectKey = Config.LICENSE_PROJECT_KEY,
+            machineId = code,
+            sessionId = sessionId,
+            leaseToken = leaseToken,
+            timestamp = timestamp,
+            nonce = nonce
+        )
+        val req = VerifyRequest(
+            project_key = Config.LICENSE_PROJECT_KEY,
+            machine_id = code,
+            session_id = sessionId,
+            lease_token = leaseToken,
+            timestamp = timestamp,
+            nonce = nonce,
+            signature = signature
+        )
+        val conn = URL(Config.LICENSE_VERIFY_URL).openConnection() as HttpURLConnection
         try {
-            conn.requestMethod = "GET"
+            conn.requestMethod = "POST"
             conn.connectTimeout = CONNECT_TIMEOUT_MS
             conn.readTimeout = READ_TIMEOUT_MS
             conn.doInput = true
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(gson.toJson(req)) }
+
             val httpCode = conn.responseCode
-            // 非 2xx 一律视为未授权(读 errorStream 避免 IOException)
             val stream = if (httpCode in 200..299) conn.inputStream else conn.errorStream
             val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (httpCode !in 200..299) {
-                return VerifyResponse(ok = false, msg = "HTTP $httpCode: ${body.take(100)}")
+                return VerifyResponse(ok = false, reason = "http_$httpCode", msg = body.take(100))
             }
             return gson.fromJson(body, VerifyResponse::class.java)
-                ?: VerifyResponse(ok = false, msg = "服务端返回空响应")
+                ?: VerifyResponse(ok = false, reason = "empty_response")
         } finally {
             conn.disconnect()
         }
     }
 
+    private fun sign(
+        projectKey: String,
+        machineId: String,
+        sessionId: String,
+        leaseToken: String,
+        timestamp: Long,
+        nonce: String
+    ): String {
+        val payload = listOf(projectKey, machineId, sessionId, leaseToken, timestamp.toString(), nonce).joinToString("\n")
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(Config.LICENSE_SIGNING_SECRET.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        return mac.doFinal(payload.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
+    private data class VerifyRequest(
+        val project_key: String,
+        val machine_id: String,
+        val session_id: String,
+        val lease_token: String,
+        val timestamp: Long,
+        val nonce: String,
+        val signature: String
+    )
+
     private data class VerifyResponse(
         val ok: Boolean = false,
-        val msg: String? = null
+        val reason: String? = null,
+        val msg: String? = null,
+        val message: String? = null,
+        val session_id: String? = null,
+        val lease_token: String? = null,
+        val lease_seconds: Int? = null
     )
 }

@@ -38,7 +38,10 @@ object Config {
     const val WEWORK_PACKAGE = "com.tencent.wework"
 
     // ===== 云端授权 =====
-    const val LICENSE_BASE_URL = "http://47.116.98.81:5002"
+    const val LICENSE_BASE_URL = "http://47.116.98.81:5003"
+    const val LICENSE_VERIFY_URL = "http://47.116.98.81:5003/api/verify"
+    const val LICENSE_PROJECT_KEY = "wework_collector"
+    const val LICENSE_SIGNING_SECRET = "wework_collector_signed_request_v1_20260524"
 
     // ===== 调试 =====
     var debug: Boolean = true
