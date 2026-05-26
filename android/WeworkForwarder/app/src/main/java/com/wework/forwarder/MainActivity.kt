@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var scrollLog: ScrollView
 
     private var licenseLoopJob: Job? = null
+    private var licenseAllowed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,6 +64,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             when (val r = LicenseManager.verify(this@MainActivity)) {
                 is LicenseManager.Result.Ok -> {
+                    licenseAllowed = true
                     initViews()
                     loadConfig()
                     setupButtons()
@@ -79,7 +81,7 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * 启动 6 小时保活循环
-     * 任意一次校验失败 → 停采集 + 弹拒绝框 + 退出
+     * 任意一次校验失败 → 静默停采集，界面保留但按钮无反应
      */
     private fun startLicenseKeepAlive() {
         licenseLoopJob?.cancel()
@@ -98,14 +100,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 授权失败时不提示用户，只静默停止采集并关闭界面。 */
+    /** 授权失败时不提示用户，只静默停止采集并禁用后续操作。 */
     private fun handleLicenseDenied(msg: String) {
+        licenseAllowed = false
         Log.w(TAG, "[授权] 静默拒绝: $msg")
-        if (CollectorService.isRunning) {
-            CollectorService.requestStop()
-            stopService(Intent(this, CollectorService::class.java))
-        }
-        finish()
+        CollectorService.requestStop()
+        stopService(Intent(this, CollectorService::class.java))
     }
 
     override fun onResume() {
@@ -138,6 +138,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupButtons() {
         btnAccessibility.setOnClickListener {
+            if (!licenseAllowed) return@setOnClickListener
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
 
@@ -192,6 +193,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startCollector() {
+        if (!licenseAllowed) return
+
         if (CollectorService.isRunning) {
             Toast.makeText(this, "已经在运行中", Toast.LENGTH_SHORT).show()
             return
@@ -255,6 +258,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopCollector() {
+        if (!licenseAllowed) return
+
         if (!CollectorService.isRunning) {
             Toast.makeText(this, "当前没有运行中的任务", Toast.LENGTH_SHORT).show()
             return
@@ -282,6 +287,8 @@ class MainActivity : AppCompatActivity() {
      * 优先 dump 企微窗口；如果找不到企微窗口，dump 当前活动窗口并标注
      */
     private fun dumpUiTree() {
+        if (!licenseAllowed) return
+
         val service = WeWorkAccessibilityService.instance
         if (service == null) {
             Toast.makeText(this, "请先开启无障碍服务", Toast.LENGTH_SHORT).show()
@@ -346,6 +353,8 @@ class MainActivity : AppCompatActivity() {
      * 无需额外存储权限，可以直接发微信/保存到文件等
      */
     private fun exportFiles() {
+        if (!licenseAllowed) return
+
         val srcDir = Storage.getDataDir()
         if (srcDir == null || !srcDir.exists()) {
             Toast.makeText(this, "没有数据可导出", Toast.LENGTH_SHORT).show()
