@@ -47,6 +47,6 @@ object Config {
     var debug: Boolean = true
 
     // ===== UI 日志回调 =====
-    /** 所有模块统一用这个回调输出日志到 UI/悬浮窗 */
+    /** 所有模块统一用这个回调输出日志到 UI/文件/隐藏状态窗口 */
     var uiLog: ((String) -> Unit)? = null
 }

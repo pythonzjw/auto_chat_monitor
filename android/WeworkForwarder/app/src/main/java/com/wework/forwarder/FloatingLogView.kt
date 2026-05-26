@@ -19,9 +19,8 @@ import android.widget.TextView
 /**
  * 悬浮日志窗口
  *
- * 收起时：右上角小胶囊（不挡下面的点击）
- * 展开时：日志区 + 按钮行（开始/停止/分析控件/导出）
- * 可拖动
+ * 当前版本保留 WindowManager overlay 实例，但默认肉眼不可见：
+ * 1x1、全透明、不接收触摸。日志仍写入内存/文件，控制入口改由主界面承担。
  */
 class FloatingLogView(private val context: Context) {
 
@@ -39,6 +38,7 @@ class FloatingLogView(private val context: Context) {
 
     private var isExpanded = false
     private var isAttached = false
+    private var visuallyHidden = true
     private val logLines = mutableListOf<String>()
     private val maxLines = 50
 
@@ -58,8 +58,9 @@ class FloatingLogView(private val context: Context) {
         // 根容器
         rootView = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xDD1B1B1B.toInt())
+            setBackgroundColor(Color.TRANSPARENT)
             setPadding(dp(8), dp(4), dp(8), dp(4))
+            alpha = 0f
         }
 
         // 状态条（收起时显示的小胶囊）
@@ -69,6 +70,7 @@ class FloatingLogView(private val context: Context) {
             maxLines = 1
             text = "\u25CF 待命"
             setPadding(dp(8), dp(4), dp(8), dp(4))
+            visibility = View.GONE
         }
         rootView.addView(statusBar)
 
@@ -143,16 +145,19 @@ class FloatingLogView(private val context: Context) {
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START  // 左上角，避免遮挡选群页面右上角的对勾按钮
             x = 0
             y = 0
+            width = 1
+            height = 1
         }
 
         wm.addView(rootView, params)
         isAttached = true
+        setVisualHidden(true)
         updateButtonState()
     }
 
@@ -209,12 +214,50 @@ class FloatingLogView(private val context: Context) {
     fun setTouchable(touchable: Boolean) {
         if (!isAttached) return
         handler.post {
-            if (touchable) {
+            if (visuallyHidden) {
+                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            } else if (touchable) {
                 params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                         WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
             } else {
                 params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                         WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            }
+            try {
+                wm.updateViewLayout(rootView, params)
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * 肉眼隐藏悬浮窗但保留 overlay 实例。
+     */
+    fun setVisualHidden(hidden: Boolean) {
+        if (!isAttached) return
+        handler.post {
+            visuallyHidden = hidden
+            if (hidden) {
+                isExpanded = false
+                rootView.alpha = 0f
+                rootView.setBackgroundColor(Color.TRANSPARENT)
+                statusBar.visibility = View.GONE
+                logArea.visibility = View.GONE
+                btnRow.visibility = View.GONE
+                params.width = 1
+                params.height = 1
+                params.x = 0
+                params.y = 0
+                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            } else {
+                rootView.alpha = 1f
+                rootView.setBackgroundColor(0xDD1B1B1B.toInt())
+                statusBar.visibility = View.VISIBLE
+                params.width = WindowManager.LayoutParams.WRAP_CONTENT
+                params.height = WindowManager.LayoutParams.WRAP_CONTENT
+                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
             }
             try {
                 wm.updateViewLayout(rootView, params)
@@ -231,6 +274,7 @@ class FloatingLogView(private val context: Context) {
     }
 
     private fun toggleExpand() {
+        if (visuallyHidden) return
         isExpanded = !isExpanded
         val vis = if (isExpanded) View.VISIBLE else View.GONE
         logArea.visibility = vis

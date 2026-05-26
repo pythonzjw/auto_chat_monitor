@@ -22,8 +22,8 @@ import kotlinx.coroutines.*
 /**
  * 采集前台服务
  *
- * 启动后只显示悬浮窗，等用户点"开始"才运行采集循环。
- * 悬浮窗按钮：开始 / 停止 / 分析控件 / 导出
+ * 启动后自动运行采集循环。
+ * 悬浮窗仍保留 overlay 实例，但肉眼不可见，控制入口由主界面承担。
  */
 class CollectorService : Service() {
 
@@ -63,6 +63,7 @@ class CollectorService : Service() {
         if (Settings.canDrawOverlays(this)) {
             floatingLog = FloatingLogView(this)
             floatingLog?.create()
+            floatingLog?.setVisualHidden(true)
             setupFloatingCallbacks()
         } else {
             Log.w(TAG, "没有悬浮窗权限，跳过创建悬浮窗")
@@ -84,31 +85,7 @@ class CollectorService : Service() {
     private fun setupFloatingCallbacks() {
         // 开始采集
         floatingLog?.onStartClick = {
-            if (collectorJob?.isActive == true) {
-                log("采集已在运行中")
-            } else {
-                isRunning = true
-                floatingLog?.setStatus("running")
-                // 任务运行时悬浮窗不接收触摸，避免挡住 dispatchGesture 的坐标点击
-                floatingLog?.setTouchable(false)
-                log("用户点击开始采集")
-                collectorJob = serviceScope.launch {
-                    try {
-                        runCollector()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        log("采集异常: ${e.message}")
-                        floatingLog?.setStatus("error")
-                    } finally {
-                        isRunning = false
-                        floatingLog?.setStatus("stopped")
-                        // 任务结束后恢复悬浮窗可触摸
-                        floatingLog?.setTouchable(true)
-                        log("采集已停止")
-                    }
-                }
-            }
+            startCollectorJob("用户点击开始采集")
         }
 
         // 停止采集
@@ -117,8 +94,7 @@ class CollectorService : Service() {
                 isRunning = false
                 log("用户点击停止采集")
                 floatingLog?.setStatus("stopped")
-                // 恢复悬浮窗可触摸
-                floatingLog?.setTouchable(true)
+                floatingLog?.setVisualHidden(true)
             } else {
                 log("当前未在运行")
             }
@@ -165,11 +141,38 @@ class CollectorService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
 
-        // 不自动启动采集，等用户在悬浮窗点"开始"
-        floatingLog?.setStatus("stopped")
-        log("服务已就绪，点击悬浮窗「开始」按钮启动采集")
+        floatingLog?.setVisualHidden(true)
+        startCollectorJob("服务已启动，开始采集")
 
         return START_NOT_STICKY
+    }
+
+    private fun startCollectorJob(startReason: String) {
+        if (collectorJob?.isActive == true) {
+            log("采集已在运行中")
+            return
+        }
+
+        isRunning = true
+        floatingLog?.setStatus("running")
+        floatingLog?.setVisualHidden(true)
+        floatingLog?.setTouchable(false)
+        log(startReason)
+        collectorJob = serviceScope.launch {
+            try {
+                runCollector()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("采集异常: ${e.message}")
+                floatingLog?.setStatus("error")
+            } finally {
+                isRunning = false
+                floatingLog?.setStatus("stopped")
+                floatingLog?.setVisualHidden(true)
+                log("采集已停止")
+            }
+        }
     }
 
     override fun onDestroy() {

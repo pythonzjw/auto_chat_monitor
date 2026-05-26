@@ -1,37 +1,34 @@
 # CONTEXT_HANDOFF
 
 ## 当前目标
-- Android 客户端从旧 `5002 /verify?code=` 白名单授权切到统一授权中心 `5003 /api/verify`，并支持静默失败、60 秒心跳、请求签名和 release 混淆。
+- 将悬浮日志窗改为肉眼不可见但仍保留 overlay 实例，任务控制入口改由 App 主界面承担，并触发 CI 构建。
 
 ## 已完成
-- `LicenseManager` 改为 POST 统一授权中心，携带 `project_key/machine_id/session_id/lease_token/timestamp/nonce/signature`。
-- 本地保存并复用 `session_id/lease_token/lease_seconds`。
-- 保活间隔改为 60 秒。
-- 授权失败不弹窗、不 toast；静默停止采集并关闭界面。
-- release 开启 R8/ProGuard 混淆和资源压缩，并保留 Gson JSON 字段与 Android 组件入口。
+- `FloatingLogView` 默认创建 1x1、全透明、不可触摸、不可聚焦的隐藏 overlay；日志仍可写入内存/文件。
+- `CollectorService` 启动前台服务后自动开始采集，不再等待悬浮窗“开始”按钮。
+- 主界面悬浮窗权限提示改为“创建隐藏状态窗口”。
+- 保留悬浮窗权限与 overlay 创建逻辑，转发/选群/采集核心流程未改。
 
 ## 已修改文件
+- `android/WeworkForwarder/app/src/main/AndroidManifest.xml`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/CollectorService.kt`
 - `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/Config.kt`
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/LicenseManager.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/FloatingLogView.kt`
 - `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MainActivity.kt`
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/Storage.kt`
-- `android/WeworkForwarder/app/build.gradle.kts`
-- `android/WeworkForwarder/app/proguard-rules.pro`
 - `CONTEXT_HANDOFF.md`
 
 ## 关键决策
-- 客户端签名 payload 与授权中心一致：`project_key\nmachine_id\nsession_id\nlease_token\ntimestamp\nnonce`。
-- 客户端失败关闭，不做离线宽限。
-- 授权中心地址：`http://47.116.98.81:5003/api/verify`。
+- 不新增 UI 开关：悬浮窗始终隐藏。
+- 隐藏方式不是 `removeView`，而是保留 `WindowManager` overlay，设置 1x1 + alpha 0 + `FLAG_NOT_TOUCHABLE`。
+- 因悬浮窗不可见，任务启动由主界面“开始”触发服务后自动运行。
 
 ## 验证情况
-- `git diff --check` 通过。
-- 本机无法执行 Gradle 编译：无 Java Runtime，`./gradlew :app:assembleRelease` 报 `Unable to locate a Java Runtime`。
-- 线上授权中心接口已用 smoke 数据验证 10 台限制、续租、错误签名；smoke 数据已清理。
+- 本地执行 `./gradlew assembleDebug` 通过（设置 `JAVA_HOME=/opt/homebrew/opt/openjdk@17`、`ANDROID_HOME=/opt/homebrew/share/android-commandlinetools`）。
+- 构建仅有既有 Kotlin warning，未出现本次改动相关错误。
 
-## 下一步
-- 在 CI 或安装 JDK 17 的机器上构建 release APK。
-- 真机验证：首次启动自动授权、60 秒心跳、授权失败无提示且不启动采集、采集转发原流程正常。
+## 未完成事项
+- 待提交并推送 tag 触发 GitHub CI。
+- 待真机验证：企微前台肉眼不可见、任务自动开始、主界面停止生效。
 
 ## 已知问题
-- `1.jpg` 是未跟踪文件，不属于本次授权改造。
+- 未跟踪文件 `1.jpg` 和 `企微群转发.apk.1` 不属于本次改动，不应提交。

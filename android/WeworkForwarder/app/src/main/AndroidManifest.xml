@@ -5,7 +5,7 @@
     <!-- 前台服务权限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
-    <!-- 悬浮窗权限（可选，用于悬浮日志窗口） -->
+    <!-- 悬浮窗权限（用于创建隐藏状态窗口） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- 存储权限（本地 JSON 备份） -->

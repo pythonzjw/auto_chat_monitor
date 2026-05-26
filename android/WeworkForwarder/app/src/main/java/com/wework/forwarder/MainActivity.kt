@@ -205,7 +205,7 @@ class MainActivity : AppCompatActivity() {
 
         // 检查悬浮窗权限
         if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "请授予悬浮窗权限，以便在企微界面显示状态", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "请授予悬浮窗权限，以便创建隐藏状态窗口", Toast.LENGTH_LONG).show()
             val intent = Intent(
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:$packageName")
