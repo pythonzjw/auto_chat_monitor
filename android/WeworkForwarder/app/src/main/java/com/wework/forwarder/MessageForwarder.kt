@@ -735,25 +735,65 @@ object MessageForwarder {
             return Regex("\\d+").find(text)?.value?.toIntOrNull()
         }
 
+        // 在行内查找左侧勾选框节点（行 Y 范围内、横向落在屏宽左 25%）；优先 CheckBox，其次最靠左的 clickable
+        fun findRowCheckbox(rowRect: Rect): AccessibilityNodeInfo? {
+            val root = service.getRootNode() ?: return null
+            val widthPixels = service.resources.displayMetrics.widthPixels
+            val leftZoneRight = (widthPixels * 0.25f).toInt()
+            val candidates = NodeFinder.findAll(root) { node ->
+                if (!node.isClickable) return@findAll false
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                val cy = rect.centerY()
+                cy in rowRect.top..rowRect.bottom && rect.right <= leftZoneRight
+            }
+            if (candidates.isEmpty()) return null
+            val checkBox = candidates.firstOrNull { it.className?.toString() == "android.widget.CheckBox" }
+            if (checkBox != null) return checkBox
+            return candidates.minByOrNull { node ->
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                rect.left
+            }
+        }
+
         fun clickAndVerify(
             groupName: String,
-            centerY: Int,
+            rowRect: Rect,
             beforeCount: Int?
         ): Boolean {
+            val centerY = rowRect.centerY()
             repeat(2) { attempt ->
-                service.clickAt(83f, centerY.toFloat())
+                val box = findRowCheckbox(rowRect)
+                val clicked: Boolean
+                val where: String
+                if (box != null) {
+                    clicked = NodeFinder.clickNode(service, box)
+                    val br = Rect().also { box.getBoundsInScreen(it) }
+                    where = "node(${br.centerX()},${br.centerY()})"
+                } else {
+                    // 兜底：按比例点击行首（1080 屏等价于原 83px）
+                    val widthPixels = service.resources.displayMetrics.widthPixels
+                    val fallbackX = widthPixels * 83f / 1080f
+                    clicked = service.clickAt(fallbackX, centerY.toFloat())
+                    where = "fallback(${fallbackX.toInt()},$centerY)"
+                }
+                if (!clicked) {
+                    log("[选群] 点击失败: $groupName $where, attempt=${attempt + 1}")
+                    return@repeat
+                }
                 GestureHelper.delay(500)
                 val afterCount = readSelectedCount(service.getRootNode())
                 if (beforeCount != null && afterCount != null) {
                     if (afterCount >= beforeCount + 1) {
-                        log("[选群] ✓ 已勾选: $groupName (83, $centerY) 计数 $beforeCount->$afterCount")
+                        log("[选群] ✓ 已勾选: $groupName $where 计数 $beforeCount->$afterCount")
                         return true
                     }
                     log("[选群] 点击后计数未增长: $groupName ($beforeCount->$afterCount), attempt=${attempt + 1}")
                     return@repeat
                 }
                 // 兼容极少数场景：确定(N) 文本临时不可见，按点击成功处理，避免误阻断
-                log("[选群] ✓ 已勾选: $groupName (83, $centerY) 计数不可读")
+                log("[选群] ✓ 已勾选: $groupName $where 计数不可读")
                 return true
             }
             return false
@@ -1042,7 +1082,7 @@ object MessageForwarder {
                 if (target.name !in pending) continue
 
                 val beforeCount = readSelectedCount(service.getRootNode())
-                if (clickAndVerify(target.name, target.rect.centerY(), beforeCount)) {
+                if (clickAndVerify(target.name, target.rect, beforeCount)) {
                     pending.remove(target.name)
                     selectedCount++
                     matchedThisScreen++
@@ -1159,11 +1199,11 @@ object MessageForwarder {
         val metrics = service.resources.displayMetrics
         val halfWidth = metrics.widthPixels / 2
 
-        // 用 screenWidth 算标题栏范围(heightPixels 可能不含导航栏,但 bounds 包含状态栏)
-        val sw = metrics.widthPixels
-        val titleTop = (sw * 0.074).toInt()       // 1080 → 80
-        val titleBottom = (sw * 0.241).toInt()    // 1080 → 260
-        val maxBtnSize = (sw * 0.185).toInt()     // 1080 → 200
+        // 按 dp 算标题栏范围，与设备无关：状态栏 24dp + Toolbar 56dp + 缓冲 24dp = 104dp；按钮 88dp 上限
+        val density = metrics.density
+        val titleTop = 0
+        val titleBottom = (104 * density).toInt()
+        val maxBtnSize = (88 * density).toInt()
         val clickables = NodeFinder.findAll(root) { node ->
             if (!node.isClickable) return@findAll false
             val rect = Rect()
@@ -1175,7 +1215,23 @@ object MessageForwarder {
         }
 
         if (clickables.isEmpty()) {
-            log("[选群] 标题栏右侧没有 clickable 节点")
+            log("[选群] 标题栏右侧没有 clickable 节点 (titleBottom=$titleBottom, maxBtnSize=$maxBtnSize, sw=${metrics.widthPixels})")
+            // 诊断：列出屏幕上半部所有 clickable 节点供下轮排查 ROM 差异
+            val topZone = NodeFinder.findAll(root) { node ->
+                if (!node.isClickable) return@findAll false
+                val r = Rect()
+                node.getBoundsInScreen(r)
+                r.top < metrics.heightPixels / 4
+            }
+            log("[选群] 屏幕上 1/4 区域 clickable 节点共 ${topZone.size} 个：")
+            topZone.take(20).forEach { node ->
+                val r = Rect()
+                node.getBoundsInScreen(r)
+                val cls = node.className?.toString()?.substringAfterLast('.') ?: "?"
+                val desc = node.contentDescription?.toString()?.take(20) ?: ""
+                val txt = node.text?.toString()?.take(20) ?: ""
+                log("[选群]   $cls bounds=[${r.left},${r.top},${r.right},${r.bottom}] desc=\"$desc\" text=\"$txt\"")
+            }
             return false
         }
 
