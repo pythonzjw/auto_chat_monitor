@@ -63,6 +63,8 @@ object MessageForwarder {
         if (anchor == null) {
             log("[转发] ✗ 所有路径均失败")
             dumpOnFailure(service, "取锚点失败")
+            // 失败兜底：回滑到底部，避免卡在历史顶端用户无法继续操作
+            repeat(5) { GestureHelper.swipeDown(service, metrics) }
             return false
         }
         if (stopped()) return false

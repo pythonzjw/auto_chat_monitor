@@ -522,16 +522,27 @@ object MessageCollector {
                     }
                 }
                 lastDividerBottom = dRect.bottom
-                // v2.4.11: 守卫 — 分割线节点存在但 bounds 在 ListView 顶部之上(常见于负坐标)时,
-                // 视为"还没滚到位",继续 swipeUp,不接受当前屏幕上方那条作为锚点
+                // v2.5.3: 三档处理过冲 — 小程序卡片高度大、惯性滚动易把分割线推到屏顶外，
+                // 必须检测过冲并反向回拉，不能再继续上翻
                 if (dRect.bottom <= listRect.top + 50) {
-                    val farAbove = dRect.bottom < listRect.top - 260
-                    log("[分割线] 节点存在但在可视区上方 (dRect.bottom=${dRect.bottom}, listTop=${listRect.top}), ${if (farAbove) "中步" else "小步"}上翻找分割线")
-                    if (stableCount >= 6 || stagnantDividerCount >= 6) {
+                    val overshoot = dRect.bottom < listRect.top - 260   // 已过冲到屏顶外较远
+                    val mode = when {
+                        overshoot -> "反向回拉"
+                        dRect.bottom < listRect.top - 80 -> "小步上翻"
+                        else -> "微步上翻"
+                    }
+                    log("[分割线] 节点存在但在可视区上方 (dRect.bottom=${dRect.bottom}, listTop=${listRect.top}), $mode 找分割线")
+                    if (stableCount >= 6 || stagnantDividerCount >= 6 || iter >= 25) {
                         log("[分割线] 动态扫描无进展，拒绝转发 (iter=$iter, stable=$stableCount, stagnant=$stagnantDividerCount)")
                         return null
                     }
-                    stepTowardOlder(farAbove)
+                    if (overshoot) {
+                        // 复用 lockedStepTowardNewer：7.5% 屏高反向小步，把分割线从屏顶外拉回可视区
+                        lockedStepTowardNewer(level = 2)
+                    } else {
+                        // 接近边界统一用小步，避免再次过冲；原 fast 分支去掉
+                        stepTowardOlder(fast = false)
+                    }
                     iter++
                     continue
                 }
