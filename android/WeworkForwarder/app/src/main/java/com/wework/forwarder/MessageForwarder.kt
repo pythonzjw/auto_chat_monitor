@@ -54,19 +54,25 @@ object MessageForwarder {
         waitForChatListStable(service)
 
         log("[转发] 步骤2: 持续上滑找分割线/时间行边界...")
-        val anchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
-        val usedDivider = true
-        val anchorSource = if (anchor != null) "分割线/时间行辅助" else "无边界"
-        if (anchor == null) {
-            log("[转发] 分割线/时间行边界不可用，拒绝使用未读数 K 兜底")
+        val primaryAnchor = MessageCollector.findFirstNewMessageByDivider(service, metrics)
+        // v2.5.5: 分割线/时间行失败时用未读数 K 作锚点兜底（小程序卡片场景常见）
+        val anchor = primaryAnchor ?: run {
+            log("[转发] 分割线/时间行边界不可用，尝试未读数 K=$unreadCount 兜底")
+            val k = unreadCount.coerceIn(1, 50)   // 徽章 99+ 折算后不精确，限制上限避免误转过多历史
+            val fb = MessageCollector.getNthFromBottomMessageRow(service, metrics, k)
+            if (fb != null) {
+                log("[转发] ✓ 未读数 K 兜底命中，锚点: ${fb.message.sender}: ${fb.message.content.take(30)}")
+                fb
+            } else {
+                log("[转发] ✗ 所有路径均失败")
+                dumpOnFailure(service, "取锚点失败")
+                // 失败兜底：回滑到底部，避免卡在历史顶端用户无法继续操作
+                repeat(5) { GestureHelper.swipeDown(service, metrics) }
+                return false
+            }
         }
-        if (anchor == null) {
-            log("[转发] ✗ 所有路径均失败")
-            dumpOnFailure(service, "取锚点失败")
-            // 失败兜底：回滑到底部，避免卡在历史顶端用户无法继续操作
-            repeat(5) { GestureHelper.swipeDown(service, metrics) }
-            return false
-        }
+        val usedDivider = primaryAnchor != null
+        val anchorSource = if (primaryAnchor != null) "分割线/时间行辅助" else "未读数K兜底"
         if (stopped()) return false
         val firstNewMsg = anchor.message
         log("[转发] 锚点来源: $anchorSource")
