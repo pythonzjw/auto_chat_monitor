@@ -15,6 +15,8 @@ object GestureHelper {
         return Random.nextInt(-max, max + 1).toFloat()
     }
 
+    fun dp(n: Int, density: Float): Int = (n * density + 0.5f).toInt()
+
     fun randomExtra(max: Int = Config.RANDOM_DELAY_MAX): Long {
         return Random.nextLong(0, max.toLong() + 1)
     }

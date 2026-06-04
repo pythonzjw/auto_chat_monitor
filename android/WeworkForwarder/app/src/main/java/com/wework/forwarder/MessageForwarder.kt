@@ -266,6 +266,7 @@ object MessageForwarder {
         metrics: DisplayMetrics
     ): List<LongPressCandidate> {
         val result = mutableListOf<LongPressCandidate>()
+        val density = metrics.density
         val rowRect = pressInfo.node?.let {
             Rect().also { rect -> it.getBoundsInScreen(rect) }
         }
@@ -306,15 +307,15 @@ object MessageForwarder {
             addCandidate("textCenter", findMainTextRect(node))
             rowRect?.let { row ->
                 // 行兜底只能在行本身有足够高度时使用，避免把点强行夹到行外导致长按空白。
-                if (row.height() >= 120) {
+                if (row.height() >= GestureHelper.dp(44, density)) {
                     val x = pressInfo.rect?.centerX()
                         ?: findBubbleRect(node).centerX()
-                    val rowY = row.centerY().coerceIn(row.top + 30, row.bottom - 30)
+                    val rowY = row.centerY().coerceIn(row.top + GestureHelper.dp(11, density), row.bottom - GestureHelper.dp(11, density))
                     val screenY = rowY.coerceIn(
                         (metrics.heightPixels * 0.20f).toInt(),
                         (metrics.heightPixels * 0.88f).toInt()
                     )
-                    if (screenY in (row.top + 20)..(row.bottom - 20)) {
+                    if (screenY in (row.top + GestureHelper.dp(7, density))..(row.bottom - GestureHelper.dp(7, density))) {
                         addCandidate("rowSafeCenter", rectAround(x, screenY))
                     }
                 }
@@ -466,7 +467,7 @@ object MessageForwarder {
             if (quickBtn != null) {
                 val qr = Rect()
                 quickBtn.getBoundsInScreen(qr)
-                if (qr.centerY() > metrics.widthPixels) {
+                if (qr.centerY() > metrics.heightPixels / 2) {
                     log("[转发] 底部按钮已可见,直接点击 y=${qr.centerY()}")
                     service.clickAt(qr.centerX().toFloat(), qr.centerY().toFloat())
                     GestureHelper.delay(1000)

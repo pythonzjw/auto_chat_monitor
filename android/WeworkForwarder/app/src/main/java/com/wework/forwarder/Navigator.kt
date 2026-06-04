@@ -231,7 +231,7 @@ object Navigator {
         // 防止纯数字预览(如 "888")被误判为徽章。
         val texts = NodeFinder.getAllTexts(container)
         val badge = texts.firstNotNullOfOrNull { t ->
-            if (t.bounds.width() >= 100) return@firstNotNullOfOrNull null
+            if (t.bounds.width() >= GestureHelper.dp(36, metrics.density)) return@firstNotNullOfOrNull null
             val s = t.text.trim()
             when {
                 s.matches(Regex("^\\d+$")) -> s.toIntOrNull()

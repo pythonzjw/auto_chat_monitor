@@ -206,7 +206,8 @@ object MessageCollector {
             return null
         }
         val screenWidth = metrics.widthPixels
-        var rows = collectMessageRowsWithNodes(root, screenWidth)
+        val density = metrics.density
+        var rows = collectMessageRowsWithNodes(root, screenWidth, density)
         log("[K计数] 当前屏消息行 ${rows.size} 条 (需要 k=$k)")
         if (rows.isEmpty()) return null
         if (rows.size >= k) {
@@ -228,7 +229,7 @@ object MessageCollector {
             GestureHelper.delay(400)
 
             val newRoot = service.getRootNode() ?: break
-            rows = collectMessageRowsWithNodes(newRoot, screenWidth)
+            rows = collectMessageRowsWithNodes(newRoot, screenWidth, density)
             swipeUps++
             val currList = rows.map { keyOf(it) }
 
@@ -683,16 +684,17 @@ object MessageCollector {
         service: WeWorkAccessibilityService,
     ): BubbleLocateResult {
         val screenWidth = service.resources.displayMetrics.widthPixels
+        val density = service.resources.displayMetrics.density
         val halfWidth = screenWidth / 2
         val listRect = Rect()
         chatList.getBoundsInScreen(listRect)
         val childCount = chatList.childCount
         var currentTime = ""
-        val maxFirstRowGap = (listRect.height() * 0.20f).toInt().coerceAtLeast(180)
+        val maxFirstRowGap = (listRect.height() * 0.20f).toInt().coerceAtLeast(GestureHelper.dp(66, density))
         val screenHeight = service.resources.displayMetrics.heightPixels
-        val pressTopSafe = maxOf(listRect.top + 24, (screenHeight * 0.18f).toInt())
+        val pressTopSafe = maxOf(listRect.top + GestureHelper.dp(9, density), (screenHeight * 0.18f).toInt())
         val identifyBottomSafe = minOf(listRect.bottom - 8, (screenHeight * 0.94f).toInt())
-        val longPressBottomSafe = minOf(listRect.bottom - 120, (screenHeight * 0.88f).toInt())
+        val longPressBottomSafe = minOf(listRect.bottom - GestureHelper.dp(44, density), (screenHeight * 0.88f).toInt())
 
         fun locateState(
             info: FirstNewMessageInfo,
@@ -703,7 +705,7 @@ object MessageCollector {
             val visibleHeight = minOf(bubbleRect.bottom, listRect.bottom) - maxOf(bubbleRect.top, listRect.top)
             return when {
                 cy <= minTop + 8 -> BubbleLocateResult.ParsePending(reason)
-                visibleHeight < 24 -> BubbleLocateResult.ParsePending("${reason}_too_clipped")
+                visibleHeight < GestureHelper.dp(9, density) -> BubbleLocateResult.ParsePending("${reason}_too_clipped")
                 cy < pressTopSafe -> BubbleLocateResult.TooHigh(info, bubbleRect, pressTopSafe, longPressBottomSafe)
                 cy > identifyBottomSafe -> BubbleLocateResult.ParsePending("${reason}_outside_list_bottom")
                 cy > longPressBottomSafe -> BubbleLocateResult.TooLow(info, bubbleRect, pressTopSafe, longPressBottomSafe)
@@ -713,7 +715,7 @@ object MessageCollector {
 
         fun isLikelyMessageRow(node: AccessibilityNodeInfo, rect: Rect): Boolean {
             val visibleBelowDivider = minOf(rect.bottom, listRect.bottom) - maxOf(rect.top, minTop)
-            if (rect.height() < 50 || visibleBelowDivider < 40) return false
+            if (rect.height() < GestureHelper.dp(18, density) || visibleBelowDivider < GestureHelper.dp(15, density)) return false
 
             val allTexts = NodeFinder.getAllTexts(node)
             val contentTexts = allTexts.map { it.text.trim() }.filter { it.isNotEmpty() }
@@ -737,7 +739,7 @@ object MessageCollector {
             }.any {
                 val r = Rect()
                 it.getBoundsInScreen(r)
-                r.bottom > minTop && r.width() >= 80 && r.height() >= 30
+                r.bottom > minTop && r.width() >= GestureHelper.dp(29, density) && r.height() >= GestureHelper.dp(11, density)
             }
             val hasVisualMessage = findCardLabel(node) != null || findLargeImage(node, 120)
             val hasMessageText = contentTexts.any {
@@ -748,7 +750,7 @@ object MessageCollector {
                     || hasLeftAvatar
                     || hasBubbleCandidate
                     || hasVisualMessage
-                    || (node.isClickable && hasMessageText && rect.height() >= 60)
+                    || (node.isClickable && hasMessageText && rect.height() >= GestureHelper.dp(22, density))
         }
 
         fun textSummary(node: AccessibilityNodeInfo): String {
@@ -1266,6 +1268,7 @@ object MessageCollector {
     private fun collectMessageRowsWithNodes(
         root: AccessibilityNodeInfo,
         screenWidth: Int,
+        density: Float,
     ): List<MessageRowInfo> {
         val rows = mutableListOf<MessageRowInfo>()
         val halfWidth = screenWidth / 2
@@ -1299,7 +1302,7 @@ object MessageCollector {
                     rows.add(MessageRowInfo(parsed.message, child, rowKey(parsed.message, child, "parsed")))
                 }
                 is ParseResult.Skip -> {
-                    if (isLikelyMessageRowForCount(child, screenWidth)) {
+                    if (isLikelyMessageRowForCount(child, screenWidth, density)) {
                         val msg = buildFallbackMessage(child, currentTime)
                         rows.add(MessageRowInfo(msg, child, rowKey(msg, child, "fallback")))
                         fallbackCount++
@@ -1334,10 +1337,10 @@ object MessageCollector {
         )
     }
 
-    private fun isLikelyMessageRowForCount(node: AccessibilityNodeInfo, screenWidth: Int): Boolean {
+    private fun isLikelyMessageRowForCount(node: AccessibilityNodeInfo, screenWidth: Int, density: Float): Boolean {
         val rect = Rect()
         node.getBoundsInScreen(rect)
-        if (rect.height() < 50) return false
+        if (rect.height() < GestureHelper.dp(18, density)) return false
 
         val allTexts = NodeFinder.getAllTexts(node)
         val contentTexts = allTexts.map { it.text.trim() }.filter { it.isNotEmpty() }
@@ -1361,7 +1364,7 @@ object MessageCollector {
         }.any {
             val r = Rect()
             it.getBoundsInScreen(r)
-            r.width() >= 80 && r.height() >= 30
+            r.width() >= GestureHelper.dp(29, density) && r.height() >= GestureHelper.dp(11, density)
         }
         val hasVisualMessage = findCardLabel(node) != null || findLargeImage(node, 120)
         val hasMessageText = contentTexts.any {
@@ -1371,7 +1374,7 @@ object MessageCollector {
                 || hasLeftAvatar
                 || hasBubbleCandidate
                 || hasVisualMessage
-                || (node.isClickable && hasMessageText && rect.height() >= 60)
+                || (node.isClickable && hasMessageText && rect.height() >= GestureHelper.dp(22, density))
     }
 
     private fun textSummary(node: AccessibilityNodeInfo): String {
