@@ -156,7 +156,7 @@ class CollectorService : Service() {
         isRunning = true
         floatingLog?.setStatus("running")
         floatingLog?.setVisualHidden(true)
-        floatingLog?.setTouchable(false)
+        floatingLog?.setTouchable(true)
         log(startReason)
         collectorJob = serviceScope.launch {
             try {

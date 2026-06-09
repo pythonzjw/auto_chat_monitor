@@ -19,8 +19,8 @@ import android.widget.TextView
 /**
  * 悬浮日志窗口
  *
- * 当前版本保留 WindowManager overlay 实例，但默认肉眼不可见：
- * 1x1、全透明、不接收触摸。日志仍写入内存/文件，控制入口改由主界面承担。
+ * 默认只显示屏幕边缘小把手，点击后临时展开控制区，5 秒后自动收回。
+ * 避免长期大面积悬浮遮挡企业微信。
  */
 class FloatingLogView(private val context: Context) {
 
@@ -34,8 +34,10 @@ class FloatingLogView(private val context: Context) {
     private lateinit var btnRow: LinearLayout
     private lateinit var startBtn: TextView
     private lateinit var stopBtn: TextView
+    private lateinit var collapseBtn: TextView
     private lateinit var params: WindowManager.LayoutParams
 
+    private val autoCollapseRunnable = Runnable { collapseToHandle() }
     private var isExpanded = false
     private var isAttached = false
     private var visuallyHidden = true
@@ -58,9 +60,9 @@ class FloatingLogView(private val context: Context) {
         // 根容器
         rootView = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.TRANSPARENT)
-            setPadding(dp(8), dp(4), dp(8), dp(4))
-            alpha = 0f
+            setBackgroundColor(0xCC1B1B1B.toInt())
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            alpha = 1f
         }
 
         // 状态条（收起时显示的小胶囊）
@@ -68,9 +70,10 @@ class FloatingLogView(private val context: Context) {
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             maxLines = 1
-            text = "\u25CF 待命"
-            setPadding(dp(8), dp(4), dp(8), dp(4))
-            visibility = View.GONE
+            text = "≡"
+            gravity = Gravity.CENTER
+            setPadding(dp(2), dp(4), dp(2), dp(4))
+            visibility = View.VISIBLE
         }
         rootView.addView(statusBar)
 
@@ -105,25 +108,19 @@ class FloatingLogView(private val context: Context) {
         btnRow.addView(startBtn)
         addSpacer(btnRow, dp(6))
 
-        // 停止按钮
-        stopBtn = makeButton("停止", 0xFFC62828.toInt()) {
+        // 暂停按钮：等同停止采集
+        stopBtn = makeButton("暂停", 0xFFC62828.toInt()) {
             onStopClick?.invoke()
+            collapseToHandle()
         }
         btnRow.addView(stopBtn)
         addSpacer(btnRow, dp(6))
 
-        // 分析控件按钮
-        val dumpBtn = makeButton("分析控件", 0xFF336699.toInt()) {
-            onDumpClick?.invoke()
+        // 收回按钮
+        collapseBtn = makeButton("收回", 0xFF455A64.toInt()) {
+            collapseToHandle()
         }
-        btnRow.addView(dumpBtn)
-        addSpacer(btnRow, dp(6))
-
-        // 导出按钮
-        val exportBtn = makeButton("导出", 0xFF6A1B9A.toInt()) {
-            onExportClick?.invoke()
-        }
-        btnRow.addView(exportBtn)
+        btnRow.addView(collapseBtn)
 
         rootView.addView(btnRow)
 
@@ -141,23 +138,23 @@ class FloatingLogView(private val context: Context) {
             WindowManager.LayoutParams.TYPE_PHONE
 
         params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,  // 不占满屏幕宽度
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            dp(12),
+            dp(48),
             overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START  // 左上角，避免遮挡选群页面右上角的对勾按钮
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
             x = 0
             y = 0
-            width = 1
-            height = 1
+            width = dp(12)
+            height = dp(48)
         }
 
         wm.addView(rootView, params)
         isAttached = true
-        setVisualHidden(true)
+        collapseToHandle()
         updateButtonState()
     }
 
@@ -187,7 +184,7 @@ class FloatingLogView(private val context: Context) {
                 "waiting" -> "\uD83D\uDFE1"
                 else -> "\u26AA"  // 灰色圆点 = stopped
             }
-            statusBar.text = "$statusIcon ${line.take(40)}"
+            statusBar.text = if (isExpanded) "$statusIcon ${line.take(40)}" else statusIcon
 
             // 更新日志区
             val recentLines = logLines.takeLast(20)
@@ -216,7 +213,7 @@ class FloatingLogView(private val context: Context) {
         handler.post {
             if (visuallyHidden) {
                 params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
             } else if (touchable) {
                 params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                         WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
@@ -231,37 +228,12 @@ class FloatingLogView(private val context: Context) {
     }
 
     /**
-     * 肉眼隐藏悬浮窗但保留 overlay 实例。
+     * hidden=true 时收为边缘小把手；hidden=false 时临时展开控制区。
      */
     fun setVisualHidden(hidden: Boolean) {
         if (!isAttached) return
         handler.post {
-            visuallyHidden = hidden
-            if (hidden) {
-                isExpanded = false
-                rootView.alpha = 0f
-                rootView.setBackgroundColor(Color.TRANSPARENT)
-                statusBar.visibility = View.GONE
-                logArea.visibility = View.GONE
-                btnRow.visibility = View.GONE
-                params.width = 1
-                params.height = 1
-                params.x = 0
-                params.y = 0
-                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            } else {
-                rootView.alpha = 1f
-                rootView.setBackgroundColor(0xDD1B1B1B.toInt())
-                statusBar.visibility = View.VISIBLE
-                params.width = WindowManager.LayoutParams.WRAP_CONTENT
-                params.height = WindowManager.LayoutParams.WRAP_CONTENT
-                params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-            }
-            try {
-                wm.updateViewLayout(rootView, params)
-            } catch (_: Exception) {}
+            if (hidden) collapseToHandle() else expandPanel()
         }
     }
 
@@ -274,19 +246,63 @@ class FloatingLogView(private val context: Context) {
     }
 
     private fun toggleExpand() {
-        if (visuallyHidden) return
-        isExpanded = !isExpanded
-        val vis = if (isExpanded) View.VISIBLE else View.GONE
-        logArea.visibility = vis
-        btnRow.visibility = vis
+        if (isExpanded) collapseToHandle() else expandPanel()
+    }
 
-        // 展开时宽度撑满，收起时自适应
-        params.width = if (isExpanded)
-            WindowManager.LayoutParams.MATCH_PARENT
-        else
-            WindowManager.LayoutParams.WRAP_CONTENT
+    private fun expandPanel() {
+        if (!isAttached) return
+        handler.removeCallbacks(autoCollapseRunnable)
+        visuallyHidden = false
+        isExpanded = true
+        rootView.alpha = 1f
+        rootView.setBackgroundColor(0xDD1B1B1B.toInt())
+        statusBar.visibility = View.VISIBLE
+        logArea.visibility = View.GONE
+        btnRow.visibility = View.VISIBLE
+        val statusIcon = when (currentStatus) {
+            "running" -> "🟢"
+            "error" -> "🔴"
+            "waiting" -> "🟡"
+            else -> "⚪"
+        }
+        val label = when (currentStatus) {
+            "running" -> "运行中"
+            "waiting" -> "等待中"
+            "error" -> "异常"
+            else -> "已暂停"
+        }
+        statusBar.text = "$statusIcon $label"
+        params.width = dp(210)
+        params.height = WindowManager.LayoutParams.WRAP_CONTENT
+        params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        try { wm.updateViewLayout(rootView, params) } catch (_: Exception) {}
+        handler.postDelayed(autoCollapseRunnable, 5000)
+    }
 
-        if (isAttached) wm.updateViewLayout(rootView, params)
+    private fun collapseToHandle() {
+        if (!isAttached) return
+        handler.removeCallbacks(autoCollapseRunnable)
+        visuallyHidden = true
+        isExpanded = false
+        rootView.alpha = 1f
+        rootView.setBackgroundColor(0xAA1B1B1B.toInt())
+        statusBar.visibility = View.VISIBLE
+        logArea.visibility = View.GONE
+        btnRow.visibility = View.GONE
+        val statusIcon = when (currentStatus) {
+            "running" -> "🟢"
+            "error" -> "🔴"
+            "waiting" -> "🟡"
+            else -> "⚪"
+        }
+        statusBar.text = statusIcon
+        params.width = dp(12)
+        params.height = dp(48)
+        params.x = 0
+        params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        try { wm.updateViewLayout(rootView, params) } catch (_: Exception) {}
     }
 
     @SuppressLint("ClickableViewAccessibility")

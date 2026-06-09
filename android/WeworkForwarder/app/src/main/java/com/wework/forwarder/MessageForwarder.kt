@@ -26,7 +26,9 @@ object MessageForwarder {
 
     private data class LongPressCandidate(
         val source: String,
-        val rect: Rect
+        val rect: Rect,
+        val node: AccessibilityNodeInfo? = null,
+        val durationMs: Long = Config.LONG_PRESS_DURATION,
     )
 
     private fun log(msg: String) {
@@ -229,8 +231,16 @@ object MessageForwarder {
             if (stopped()) return false
             val rect = candidate.rect
             log("[转发] 长按候选 ${idx + 1}/${candidates.size} ${candidate.source}: (${rect.centerX()}, ${rect.centerY()}) bounds=$rect")
-            service.longPressAt(rect.centerX().toFloat(), rect.centerY().toFloat())
-            GestureHelper.delay(1000)
+            var longPressed = false
+            if (pressInfo.message.type == "card" && candidate.node != null) {
+                longPressed = candidate.node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+                log("[转发] 卡片候选 ${idx + 1} ACTION_LONG_CLICK=${longPressed}")
+                if (longPressed) GestureHelper.delay(900)
+            }
+            if (!longPressed) {
+                service.longPressAt(rect.centerX().toFloat(), rect.centerY().toFloat(), candidate.durationMs)
+                GestureHelper.delay(1200)
+            }
 
             if (tryClickMultiSelectWithVerify(service, waitMs = 1800, attemptLabel = "候选${idx + 1}")) {
                 log("[转发] ✓ 候选 ${idx + 1}(${candidate.source}) 已进入消息多选模式")
@@ -275,7 +285,12 @@ object MessageForwarder {
             return Rect(cx - 40, cy - 20, cx + 40, cy + 20)
         }
 
-        fun addCandidate(source: String, rect: Rect?) {
+        fun addCandidate(
+            source: String,
+            rect: Rect?,
+            node: AccessibilityNodeInfo? = null,
+            durationMs: Long = Config.LONG_PRESS_DURATION
+        ) {
             rect ?: return
             if (rect.width() <= 0 || rect.height() <= 0) return
             val cx = rect.centerX()
@@ -297,14 +312,46 @@ object MessageForwarder {
                     && kotlin.math.abs(existing.rect.centerY() - cy) <= 12
             }
             if (!duplicate) {
-                result.add(LongPressCandidate(source, rectAround(cx, cy)))
+                result.add(LongPressCandidate(source, rectAround(cx, cy), node, durationMs))
             }
         }
 
-        addCandidate("primaryRect", pressInfo.rect)
+        fun addCardCandidates(node: AccessibilityNodeInfo) {
+            if (pressInfo.message.type != "card") return
+            val minWidth = (metrics.widthPixels * 0.22f).toInt()
+            val minHeight = GestureHelper.dp(38, density)
+            val maxRight = (metrics.widthPixels * 0.96f).toInt()
+            val descendants = NodeFinder.findAll(node) { child ->
+                val cls = child.className?.toString() ?: ""
+                if (cls == "android.widget.ImageView") return@findAll false
+                val r = Rect()
+                child.getBoundsInScreen(r)
+                r.width() >= minWidth
+                    && r.height() >= minHeight
+                    && r.left > metrics.widthPixels * 0.08f
+                    && r.right <= maxRight
+                    && (rowRect == null || rowRect.contains(r.centerX(), r.centerY()))
+            }.map { child ->
+                val r = Rect()
+                child.getBoundsInScreen(r)
+                child to r
+            }.sortedByDescending { (_, r) -> r.width() * r.height() }
+
+            descendants.take(4).forEachIndexed { idx, (child, rect) ->
+                val topThirdY = (rect.top + rect.height() / 3).coerceIn(rect.top + 8, rect.bottom - 8)
+                addCandidate("cardNode${idx + 1}", rectAround(rect.centerX(), topThirdY), child, 900L)
+                addCandidate("cardCenter${idx + 1}", rect, child, 900L)
+            }
+            addCandidate("cardText", findMainTextRect(node), durationMs = 900L)
+        }
+
         pressInfo.node?.let { node ->
-            addCandidate("bubbleCenter", findBubbleRect(node))
-            addCandidate("textCenter", findMainTextRect(node))
+            addCardCandidates(node)
+        }
+        addCandidate("primaryRect", pressInfo.rect, durationMs = if (pressInfo.message.type == "card") 900L else Config.LONG_PRESS_DURATION)
+        pressInfo.node?.let { node ->
+            addCandidate("bubbleCenter", findBubbleRect(node), durationMs = if (pressInfo.message.type == "card") 900L else Config.LONG_PRESS_DURATION)
+            addCandidate("textCenter", findMainTextRect(node), durationMs = if (pressInfo.message.type == "card") 900L else Config.LONG_PRESS_DURATION)
             rowRect?.let { row ->
                 // 行兜底只能在行本身有足够高度时使用，避免把点强行夹到行外导致长按空白。
                 if (row.height() >= GestureHelper.dp(44, density)) {
@@ -316,12 +363,12 @@ object MessageForwarder {
                         (metrics.heightPixels * 0.88f).toInt()
                     )
                     if (screenY in (row.top + GestureHelper.dp(7, density))..(row.bottom - GestureHelper.dp(7, density))) {
-                        addCandidate("rowSafeCenter", rectAround(x, screenY))
+                        addCandidate("rowSafeCenter", rectAround(x, screenY), durationMs = if (pressInfo.message.type == "card") 900L else Config.LONG_PRESS_DURATION)
                     }
                 }
             }
         }
-        return result.take(4)
+        return result.take(if (pressInfo.message.type == "card") 8 else 4)
     }
 
     private fun findMainTextRect(listItem: AccessibilityNodeInfo): Rect? {
@@ -483,8 +530,6 @@ object MessageForwarder {
         var observedMovement = !needScroll
         var stableCount = 0
         var visibleButtonStillCount = 0
-        var upperButtonStillCount = 0
-        var lastTrustedSelectRect: Rect? = null
         var scrollCount = 0
         var noListCount = 0
 
@@ -530,47 +575,25 @@ object MessageForwarder {
                     && curGeometryKey == lastGeometryKey
             val btn = findSelectToHereDown(service)
             var btnRect: Rect? = null
-            var upperBtnRect: Rect? = null
             val btnY = btn?.let {
                 val rect = Rect()
                 it.getBoundsInScreen(rect)
                 if (rect.centerY() > metrics.heightPixels / 2) {
-                    lastTrustedSelectRect = Rect(rect)
                     btnRect = Rect(rect)
                 }
                 rect.centerY()
             } ?: -1
-            if (btn == null) {
-                val anyBtn = findSelectToHereDown(service, strict = false)
-                if (anyBtn != null) {
-                    val rect = Rect()
-                    anyBtn.getBoundsInScreen(rect)
-                    if (rect.centerY() < metrics.heightPixels / 2) {
-                        upperBtnRect = Rect(rect)
-                    }
-                }
-            }
             log("[转发] scrollSelect i=$scrollCount moved=$moved observed=$observedMovement stable=$stable stableCount=$stableCount bottom=$curBottom count=$curChildCount btnY=$btnY")
 
             if (btnRect != null && stable && !observedMovement) {
                 visibleButtonStillCount++
-                log("[转发] 底部'选择到这里'可见但列表未移动，第 ${visibleButtonStillCount} 轮")
+                log("[转发] 底部'选择到这里'可见但列表未确认移动，第 ${visibleButtonStillCount} 轮，继续等待")
                 if (visibleButtonStillCount >= 3) {
-                    return clickSelectRect(btnRect!!, "底部按钮持续可见且列表无移动")
+                    log("[转发] 列表未确认向底部移动，拒绝点击'选择到这里'，避免误选旧消息")
+                    return false
                 }
             } else if (moved || btnRect == null) {
                 visibleButtonStillCount = 0
-            }
-            if (upperBtnRect != null && stable && !observedMovement) {
-                upperButtonStillCount++
-                log("[转发] 上半屏'选择到这里'可见且列表未移动，第 ${upperButtonStillCount} 轮")
-                if (upperButtonStillCount >= 3) {
-                    upperBtnRect?.let {
-                        return clickSelectRect(it, "上半屏按钮持续可见且列表无移动，按到底兜底")
-                    }
-                }
-            } else if (moved || upperBtnRect == null) {
-                upperButtonStillCount = 0
             }
 
             if (stable && observedMovement) {
@@ -593,9 +616,6 @@ object MessageForwarder {
                         val r = Rect()
                         retryBtn.getBoundsInScreen(r)
                         return clickSelectRect(r, "回拉后找到按钮")
-                    }
-                    lastTrustedSelectRect?.let {
-                        return clickSelectRect(it, "回拉后仍未找到按钮，使用最后可信坐标")
                     }
                     log("[转发] 已确认到底但无可用'选择到这里'按钮")
                     return false
@@ -744,17 +764,30 @@ object MessageForwarder {
             return Regex("\\d+").find(text)?.value?.toIntOrNull()
         }
 
-        // 在行内查找左侧勾选框节点（行 Y 范围内、横向落在屏宽左 25%）；优先 CheckBox，其次最靠左的 clickable
-        fun findRowCheckbox(rowRect: Rect): AccessibilityNodeInfo? {
+        // 在行内查找左侧勾选框节点：只点真实节点，不再用左下角坐标兜底。
+        fun findRowCheckbox(
+            rowRect: Rect,
+            listRect: Rect,
+            topSafe: Int,
+            bottomSafe: Int
+        ): AccessibilityNodeInfo? {
             val root = service.getRootNode() ?: return null
-            val widthPixels = service.resources.displayMetrics.widthPixels
-            val leftZoneRight = (widthPixels * 0.25f).toInt()
+            val metrics = service.resources.displayMetrics
+            val leftZoneRight = (metrics.widthPixels * 0.25f).toInt()
+            val maxBoxSize = GestureHelper.dp(72, metrics.density)
             val candidates = NodeFinder.findAll(root) { node ->
                 if (!node.isClickable) return@findAll false
                 val rect = Rect()
                 node.getBoundsInScreen(rect)
                 val cy = rect.centerY()
-                cy in rowRect.top..rowRect.bottom && rect.right <= leftZoneRight
+                cy in rowRect.top..rowRect.bottom
+                    && cy in topSafe..bottomSafe
+                    && rect.left >= listRect.left
+                    && rect.right <= leftZoneRight
+                    && rect.top >= listRect.top
+                    && rect.bottom <= listRect.bottom
+                    && rect.width() in 1..maxBoxSize
+                    && rect.height() in 1..maxBoxSize
             }
             if (candidates.isEmpty()) return null
             val checkBox = candidates.firstOrNull { it.className?.toString() == "android.widget.CheckBox" }
@@ -769,41 +802,48 @@ object MessageForwarder {
         fun clickAndVerify(
             groupName: String,
             rowRect: Rect,
-            beforeCount: Int?
+            beforeCount: Int?,
+            listRect: Rect,
+            topSafe: Int,
+            bottomSafe: Int
         ): Boolean {
-            val centerY = rowRect.centerY()
             repeat(2) { attempt ->
-                val box = findRowCheckbox(rowRect)
-                val clicked: Boolean
-                val where: String
-                if (box != null) {
-                    clicked = NodeFinder.clickNode(service, box)
-                    val br = Rect().also { box.getBoundsInScreen(it) }
-                    where = "node(${br.centerX()},${br.centerY()})"
-                } else {
-                    // 兜底：按比例点击行首（1080 屏等价于原 83px）
-                    val widthPixels = service.resources.displayMetrics.widthPixels
-                    val fallbackX = widthPixels * 83f / 1080f
-                    clicked = service.clickAt(fallbackX, centerY.toFloat())
-                    where = "fallback(${fallbackX.toInt()},$centerY)"
+                val box = findRowCheckbox(rowRect, listRect, topSafe, bottomSafe)
+                if (box == null) {
+                    log("[选群] 找不到安全复选框节点: $groupName bounds=$rowRect attempt=${attempt + 1}")
+                    return@repeat
                 }
+                val br = Rect().also { box.getBoundsInScreen(it) }
+                val where = "node(${br.centerX()},${br.centerY()})"
+                val clicked = NodeFinder.clickNode(service, box)
                 if (!clicked) {
                     log("[选群] 点击失败: $groupName $where, attempt=${attempt + 1}")
                     return@repeat
                 }
                 GestureHelper.delay(500)
-                val afterCount = readSelectedCount(service.getRootNode())
-                if (beforeCount != null && afterCount != null) {
-                    if (afterCount >= beforeCount + 1) {
+                var afterCount = readSelectedCount(service.getRootNode())
+                if (beforeCount == null || afterCount == null) {
+                    GestureHelper.delay(500)
+                    afterCount = readSelectedCount(service.getRootNode())
+                }
+                if (beforeCount == null || afterCount == null) {
+                    log("[选群] 计数不可读，拒绝默认成功: $groupName $where")
+                    return false
+                }
+                when {
+                    afterCount == beforeCount + 1 -> {
                         log("[选群] ✓ 已勾选: $groupName $where 计数 $beforeCount->$afterCount")
                         return true
                     }
-                    log("[选群] 点击后计数未增长: $groupName ($beforeCount->$afterCount), attempt=${attempt + 1}")
-                    return@repeat
+                    afterCount < beforeCount -> {
+                        log("[选群] ✗ 疑似误取消已选群: $groupName $where 计数 $beforeCount->$afterCount")
+                        return false
+                    }
+                    else -> {
+                        log("[选群] 点击后计数未增长: $groupName ($beforeCount->$afterCount), attempt=${attempt + 1}")
+                        return@repeat
+                    }
                 }
-                // 兼容极少数场景：确定(N) 文本临时不可见，按点击成功处理，避免误阻断
-                log("[选群] ✓ 已勾选: $groupName $where 计数不可读")
-                return true
             }
             return false
         }
@@ -1091,7 +1131,7 @@ object MessageForwarder {
                 if (target.name !in pending) continue
 
                 val beforeCount = readSelectedCount(service.getRootNode())
-                if (clickAndVerify(target.name, target.rect, beforeCount)) {
+                if (clickAndVerify(target.name, target.rect, beforeCount, list.rect, topSafe, bottomSafe)) {
                     pending.remove(target.name)
                     selectedCount++
                     matchedThisScreen++
