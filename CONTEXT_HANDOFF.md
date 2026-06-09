@@ -1,32 +1,30 @@
 # CONTEXT_HANDOFF
 
 ## 当前目标
-- 提升企微转发稳定性：小程序卡片可长按转发、避免误选旧消息、修复选群页左下角误点，并恢复小面积侧边小把手控制。
+- 最小修复：采集运行时常驻底部黑色状态条；转发成功/失败后回企微消息首页继续监听，不误退手机桌面。
 
 ## 已完成
-- `MessageForwarder` 增加卡片消息专用长按候选：优先卡片节点 `ACTION_LONG_CLICK`，再用 900ms 坐标长按，失败则本轮失败不误选旧消息。
-- `scrollAndSelectToHere` 移除上半屏/最后可信坐标兜底，只在确认列表向底部移动并稳定后点击下半屏“选择到这里”。
-- `selectTargetGroups` 删除左侧坐标兜底，只点击安全区内真实复选框/可点击节点；确定计数必须 +1 才算成功，计数下降判定误取消。
-- `FloatingLogView` 改为右侧边缘小把手，点击展开开始/暂停/收回，5 秒自动收回；`CollectorService` 运行中保持小把手可触摸。
+- `FloatingLogView` 保留右侧小把手，并新增不可触摸的底部黑色状态条。
+- 运行/等待时底部显示“监控采集群消息中...”，异常时显示“转发异常，正在恢复...”，停止后隐藏。
+- `CollectorService` 转发结束后不再直接 `exitGroup()`，改用 `Navigator.goToMessageList()` 收敛回企微消息页。
+- 本次未改选群逻辑、蓝勾识别、搜索流程、缺失群整批拒绝策略。
 
 ## 已修改文件
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageForwarder.kt`
 - `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/FloatingLogView.kt`
 - `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/CollectorService.kt`
 - `CONTEXT_HANDOFF.md`
 
 ## 关键决策
-- 小程序必须转发；长按失败时本轮失败并 dump，不跳到下一条、不选时间线上方旧消息。
-- 选群页不再允许坐标兜底点左下角，宁可失败也不取消已选群。
-- 主要按 720/1080 竖屏，通过比例 + dp + 安全区限制点击。
-- 侧边控制使用小把手常驻，大面板仅短暂展开。
+- “返回桌面”确认指企微消息首页，不是系统桌面；不新增 HOME 行为。
+- 状态黑条采集期间常驻，但设置为不可触摸，避免影响企微手势。
+- 74 群不存在属于配置/账号权限问题，本次不通过搜索绕过。
 
 ## 验证情况
 - `git diff --check` 通过。
 - `JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=/opt/homebrew/share/android-commandlinetools ./gradlew assembleDebug` 通过。
 
 ## 未完成事项
-- 待真机验证：小程序作为第一条新消息、选群底部边缘、多目标群分批、侧边小把手展开/自动收回。
+- 待真机验证：底部黑条位置是否合适；成功/失败后是否稳定回企微消息页；右侧小把手是否仍可暂停。
 - 待按需提交、打 tag、触发 CI。
 
 ## 已知问题

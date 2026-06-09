@@ -269,8 +269,10 @@ class CollectorService : Service() {
                         log(if (ok) "✓ 转发完成" else "✗ 转发失败")
                         if (!ok) floatingLog?.setStatus("error")
 
-                        // 退出回消息列表(供下一轮扫描)
-                        Navigator.exitGroup(service)
+                        // 无论成功/失败，都收敛回企微消息页继续监听，避免多次返回误退到手机桌面。
+                        if (!Navigator.goToMessageList(service)) {
+                            log("回到企微消息页失败，下一轮将尝试恢复")
+                        }
                         delay(1000)
                     }
                 }

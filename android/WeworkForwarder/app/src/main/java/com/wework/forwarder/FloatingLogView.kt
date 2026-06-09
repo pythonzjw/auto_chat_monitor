@@ -35,7 +35,9 @@ class FloatingLogView(private val context: Context) {
     private lateinit var startBtn: TextView
     private lateinit var stopBtn: TextView
     private lateinit var collapseBtn: TextView
+    private lateinit var bottomStatus: TextView
     private lateinit var params: WindowManager.LayoutParams
+    private lateinit var bottomParams: WindowManager.LayoutParams
 
     private val autoCollapseRunnable = Runnable { collapseToHandle() }
     private var isExpanded = false
@@ -124,6 +126,16 @@ class FloatingLogView(private val context: Context) {
 
         rootView.addView(btnRow)
 
+        // 底部常驻状态条：不可触摸，避免影响企微点击/手势。
+        bottomStatus = TextView(context).apply {
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setBackgroundColor(0xDD1B1B1B.toInt())
+            setPadding(dp(20), dp(10), dp(20), dp(10))
+            text = "监控采集群消息中..."
+            visibility = View.GONE
+        }
+
         // 点击状态条切换展开/收起
         statusBar.setOnClickListener { toggleExpand() }
 
@@ -152,16 +164,35 @@ class FloatingLogView(private val context: Context) {
             height = dp(48)
         }
 
+        bottomParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            x = 0
+            y = dp(84)
+        }
+
         wm.addView(rootView, params)
+        wm.addView(bottomStatus, bottomParams)
         isAttached = true
         collapseToHandle()
         updateButtonState()
+        updateBottomStatus()
     }
 
     fun destroy() {
         if (!isAttached) return
         try {
             wm.removeView(rootView)
+        } catch (_: Exception) {
+        }
+        try {
+            wm.removeView(bottomStatus)
         } catch (_: Exception) {
         }
         isAttached = false
@@ -178,12 +209,7 @@ class FloatingLogView(private val context: Context) {
             }
 
             // 更新状态条
-            val statusIcon = when (currentStatus) {
-                "running" -> "\uD83D\uDFE2"
-                "error" -> "\uD83D\uDD34"
-                "waiting" -> "\uD83D\uDFE1"
-                else -> "\u26AA"  // 灰色圆点 = stopped
-            }
+            val statusIcon = statusIcon()
             statusBar.text = if (isExpanded) "$statusIcon ${line.take(40)}" else statusIcon
 
             // 更新日志区
@@ -198,7 +224,13 @@ class FloatingLogView(private val context: Context) {
      */
     fun setStatus(status: String) {
         currentStatus = status
-        handler.post { updateButtonState() }
+        handler.post {
+            updateButtonState()
+            updateBottomStatus()
+            if (!isExpanded && ::statusBar.isInitialized) {
+                statusBar.text = statusIcon()
+            }
+        }
     }
 
     /**
@@ -237,6 +269,35 @@ class FloatingLogView(private val context: Context) {
         }
     }
 
+    private fun statusIcon(): String {
+        return when (currentStatus) {
+            "running" -> "🟢"
+            "error" -> "🔴"
+            "waiting" -> "🟡"
+            else -> "⚪"
+        }
+    }
+
+    private fun bottomStatusText(): String? {
+        return when (currentStatus) {
+            "running", "waiting" -> "监控采集群消息中..."
+            "error" -> "转发异常，正在恢复..."
+            else -> null
+        }
+    }
+
+    private fun updateBottomStatus() {
+        if (!isAttached || !::bottomStatus.isInitialized) return
+        val text = bottomStatusText()
+        if (text == null) {
+            bottomStatus.visibility = View.GONE
+        } else {
+            bottomStatus.text = text
+            bottomStatus.visibility = View.VISIBLE
+        }
+        try { wm.updateViewLayout(bottomStatus, bottomParams) } catch (_: Exception) {}
+    }
+
     private fun updateButtonState() {
         val isActive = currentStatus == "running" || currentStatus == "waiting"
         startBtn.alpha = if (isActive) 0.4f else 1.0f
@@ -259,12 +320,7 @@ class FloatingLogView(private val context: Context) {
         statusBar.visibility = View.VISIBLE
         logArea.visibility = View.GONE
         btnRow.visibility = View.VISIBLE
-        val statusIcon = when (currentStatus) {
-            "running" -> "🟢"
-            "error" -> "🔴"
-            "waiting" -> "🟡"
-            else -> "⚪"
-        }
+        val statusIcon = statusIcon()
         val label = when (currentStatus) {
             "running" -> "运行中"
             "waiting" -> "等待中"
@@ -290,13 +346,7 @@ class FloatingLogView(private val context: Context) {
         statusBar.visibility = View.VISIBLE
         logArea.visibility = View.GONE
         btnRow.visibility = View.GONE
-        val statusIcon = when (currentStatus) {
-            "running" -> "🟢"
-            "error" -> "🔴"
-            "waiting" -> "🟡"
-            else -> "⚪"
-        }
-        statusBar.text = statusIcon
+        statusBar.text = statusIcon()
         params.width = dp(12)
         params.height = dp(48)
         params.x = 0
