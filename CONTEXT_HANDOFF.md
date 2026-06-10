@@ -1,30 +1,30 @@
 # CONTEXT_HANDOFF
 
 ## 当前目标
-- 最小修复：采集运行时常驻底部黑色状态条；转发成功/失败后回企微消息首页继续监听，不误退手机桌面。
+- 修复选群时计数暂时不可读导致重复点击同一群、把已选群取消的问题。
 
 ## 已完成
-- `FloatingLogView` 保留右侧小把手，并新增不可触摸的底部黑色状态条。
-- 运行/等待时底部显示“监控采集群消息中...”，异常时显示“转发异常，正在恢复...”，停止后隐藏。
-- `CollectorService` 转发结束后不再直接 `exitGroup()`，改用 `Navigator.goToMessageList()` 收敛回企微消息页。
-- 本次未改选群逻辑、蓝勾识别、搜索流程、缺失群整批拒绝策略。
+- `MessageForwarder.selectTargetGroups` 增加“已点击待最终确认”状态。
+- 目标群点击后若 `确定(N)` 计数不可读：从待选移除，加入待确认集合，后续不再重复点击该群。
+- 目标群点击后若计数明确 `+1`：按已确认选中处理。
+- 若计数下降：判定疑似误取消，立即停止本批，避免继续误操作。
+- 发送前强制读取最终 `确定(N)`，必须等于本批去重目标数才点击确定；否则拒绝部分发送。
 
 ## 已修改文件
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/FloatingLogView.kt`
-- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/CollectorService.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageForwarder.kt`
 - `CONTEXT_HANDOFF.md`
 
 ## 关键决策
-- “返回桌面”确认指企微消息首页，不是系统桌面；不新增 HOME 行为。
-- 状态黑条采集期间常驻，但设置为不可触摸，避免影响企微手势。
-- 74 群不存在属于配置/账号权限问题，本次不通过搜索绕过。
+- 不加搜索、不加蓝勾识别、不允许部分发送。
+- “计数不可读”不代表失败，也不代表成功；只表示已点过待最终总数确认。
+- 通过最终 `确定(N)` 满额来保证 9 个目标全部选中。
 
 ## 验证情况
 - `git diff --check` 通过。
 - `JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=/opt/homebrew/share/android-commandlinetools ./gradlew assembleDebug` 通过。
 
 ## 未完成事项
-- 待真机验证：底部黑条位置是否合适；成功/失败后是否稳定回企微消息页；右侧小把手是否仍可暂停。
+- 待真机验证：83 首次计数不可读后不再二次点击取消；最终 `确定(9)` 才发送。
 - 待按需提交、打 tag、触发 CI。
 
 ## 已知问题

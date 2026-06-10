@@ -799,6 +799,11 @@ object MessageForwarder {
             }
         }
 
+        data class ClickResult(
+            val status: String,
+            val afterCount: Int? = null,
+        )
+
         fun clickAndVerify(
             groupName: String,
             rowRect: Rect,
@@ -806,7 +811,7 @@ object MessageForwarder {
             listRect: Rect,
             topSafe: Int,
             bottomSafe: Int
-        ): Boolean {
+        ): ClickResult {
             repeat(2) { attempt ->
                 val box = findRowCheckbox(rowRect, listRect, topSafe, bottomSafe)
                 if (box == null) {
@@ -827,17 +832,17 @@ object MessageForwarder {
                     afterCount = readSelectedCount(service.getRootNode())
                 }
                 if (beforeCount == null || afterCount == null) {
-                    log("[选群] 计数不可读，拒绝默认成功: $groupName $where")
-                    return false
+                    log("[选群] 计数不可读，已点击待最终确认: $groupName $where")
+                    return ClickResult("pending_confirm", afterCount)
                 }
                 when {
                     afterCount == beforeCount + 1 -> {
                         log("[选群] ✓ 已勾选: $groupName $where 计数 $beforeCount->$afterCount")
-                        return true
+                        return ClickResult("confirmed", afterCount)
                     }
                     afterCount < beforeCount -> {
                         log("[选群] ✗ 疑似误取消已选群: $groupName $where 计数 $beforeCount->$afterCount")
-                        return false
+                        return ClickResult("fatal", afterCount)
                     }
                     else -> {
                         log("[选群] 点击后计数未增长: $groupName ($beforeCount->$afterCount), attempt=${attempt + 1}")
@@ -845,7 +850,7 @@ object MessageForwarder {
                     }
                 }
             }
-            return false
+            return ClickResult("no_effect")
         }
 
         fun clipRect(rect: Rect, container: Rect): Rect? {
@@ -1078,6 +1083,8 @@ object MessageForwarder {
             log("[选群] 输入存在重复群名，已按首次出现去重: ${duplicates.distinct().joinToString(", ")}")
         }
 
+        val targetTotal = pending.size
+        val clickedPendingConfirm = linkedSetOf<String>()
         var selectedCount = 0
         var lastPageSignature: String? = null
         val edgeAdjustAttempts = mutableMapOf<String, Int>()
@@ -1131,12 +1138,25 @@ object MessageForwarder {
                 if (target.name !in pending) continue
 
                 val beforeCount = readSelectedCount(service.getRootNode())
-                if (clickAndVerify(target.name, target.rect, beforeCount, list.rect, topSafe, bottomSafe)) {
-                    pending.remove(target.name)
-                    selectedCount++
-                    matchedThisScreen++
-                } else {
-                    log("[选群] 勾选未生效,保留待选: ${target.name}")
+                when (clickAndVerify(target.name, target.rect, beforeCount, list.rect, topSafe, bottomSafe).status) {
+                    "confirmed" -> {
+                        pending.remove(target.name)
+                        selectedCount++
+                        matchedThisScreen++
+                    }
+                    "pending_confirm" -> {
+                        pending.remove(target.name)
+                        clickedPendingConfirm.add(target.name)
+                        matchedThisScreen++
+                        log("[选群] ${target.name} 已移入待确认，后续不再重复点击")
+                    }
+                    "fatal" -> {
+                        log("[选群] ✗ 检测到计数下降，停止本批，避免继续误取消")
+                        return false
+                    }
+                    else -> {
+                        log("[选群] 勾选未生效,保留待选: ${target.name}")
+                    }
                 }
             }
 
@@ -1190,32 +1210,39 @@ object MessageForwarder {
                     .take(10).joinToString(", ") { "\"${it.text.take(20)}\"" }
                 log("[选群] 页面文本: $summary")
             }
-            log("[选群] 共勾选 $selectedCount/${pending.size + selectedCount}")
+            log("[选群] 已确认 $selectedCount，待最终确认 ${clickedPendingConfirm.size}，未找到 ${pending.size}，目标 $targetTotal")
             log("[选群] ✗ 未全量选中，拒绝部分发送")
             return false
         }
 
-        log("[选群] 共勾选 $selectedCount/${pending.size + selectedCount}")
-
-        // 点击底部"确定(N)"按钮，进入发送确认弹窗
-        if (selectedCount > 0) {
-            GestureHelper.delay(500)
-            val confirmRoot = service.getRootNode()
-            val confirmBtn = NodeFinder.findByTextRegex(confirmRoot, Regex("确定\\s*\\(\\d+\\)"))
-                ?: NodeFinder.findByText(confirmRoot, "确定")
-            if (confirmBtn != null) {
-                val cRect = Rect()
-                confirmBtn.getBoundsInScreen(cRect)
-                log("[选群] 点击: ${confirmBtn.text} (${cRect.centerX()}, ${cRect.centerY()})")
-                service.clickAt(cRect.centerX().toFloat(), cRect.centerY().toFloat())
-                GestureHelper.delay(1500)
-            } else {
-                log("[选群] ✗ 找不到确定按钮")
-                return false
+        // 点击底部"确定(N)"前必须读到最终计数，并且计数等于本批目标数。
+        GestureHelper.delay(800)
+        val confirmRoot = service.getRootNode()
+        val finalCount = readSelectedCount(confirmRoot)
+        log("[选群] 最终计数: 确认=$selectedCount, 待确认=${clickedPendingConfirm.size}, 确定按钮=${finalCount ?: -1}, 目标=$targetTotal")
+        if (finalCount != targetTotal) {
+            if (clickedPendingConfirm.isNotEmpty()) {
+                log("[选群] 待确认目标: ${clickedPendingConfirm.joinToString(", ")}")
             }
+            log("[选群] ✗ 最终计数未满，拒绝部分发送")
+            return false
         }
 
-        return selectedCount > 0
+        val confirmBtn = NodeFinder.findByTextRegex(confirmRoot, Regex("确定\\s*\\(\\d+\\)"))
+            ?: NodeFinder.findByText(confirmRoot, "确定")
+        if (confirmBtn != null) {
+            val cRect = Rect()
+            confirmBtn.getBoundsInScreen(cRect)
+            log("[选群] 共勾选 $finalCount/$targetTotal")
+            log("[选群] 点击: ${confirmBtn.text} (${cRect.centerX()}, ${cRect.centerY()})")
+            service.clickAt(cRect.centerX().toFloat(), cRect.centerY().toFloat())
+            GestureHelper.delay(1500)
+        } else {
+            log("[选群] ✗ 找不到确定按钮")
+            return false
+        }
+
+        return true
     }
 
     /**
