@@ -1344,6 +1344,8 @@ object MessageCollector {
 
         val allTexts = NodeFinder.getAllTexts(node)
         val contentTexts = allTexts.map { it.text.trim() }.filter { it.isNotEmpty() }
+        if (isExternalGroupNotice(contentTexts)) return false
+
         val hasOnlyNonMessageText = contentTexts.isNotEmpty() && contentTexts.all {
             isTimeLabel(it) || isSystemMessage(it) || it.contains("新消息") || isUiElement(it)
         }
@@ -1383,6 +1385,12 @@ object MessageCollector {
             .filter { it.isNotEmpty() && !isTimeLabel(it) && !isSystemMessage(it) && !isUiElement(it) }
             .take(4)
             .joinToString("/")
+    }
+
+    private fun isExternalGroupNotice(texts: List<String>): Boolean {
+        if (texts.isEmpty()) return false
+        val joined = texts.joinToString("")
+        return joined.contains("此群为外部群") && joined.contains("了解更多")
     }
 
     /**
@@ -1705,6 +1713,8 @@ object MessageCollector {
         // - "你邀请拒绝、Yummy加入了群聊"
         // - "你将Yummy移出了群聊"
         // - "你修改群名为\"采集群\""
+        if (text.contains("此群为外部群") && text.contains("了解更多")) return true
+        if (text.contains("此群为外部群")) return true
         val keywords = listOf(
             "加入了群聊", "退出了群聊", "移出了群聊",
             "修改群名为", "修改群名",

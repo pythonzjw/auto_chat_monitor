@@ -1,30 +1,29 @@
 # CONTEXT_HANDOFF
 
 ## 当前目标
-- 修复选群时计数暂时不可读导致重复点击同一群、把已选群取消的问题。
+- 修复源群锚点选择错误：快团团/小程序复合消息长按点不准，以及 K 兜底把企微系统提示当成未读消息。
 
 ## 已完成
-- `MessageForwarder.selectTargetGroups` 增加“已点击待最终确认”状态。
-- 目标群点击后若 `确定(N)` 计数不可读：从待选移除，加入待确认集合，后续不再重复点击该群。
-- 目标群点击后若计数明确 `+1`：按已确认选中处理。
-- 若计数下降：判定疑似误取消，立即停止本批，避免继续误操作。
-- 发送前强制读取最终 `确定(N)`，必须等于本批去重目标数才点击确定；否则拒绝部分发送。
+- `MessageForwarder.buildLongPressCandidates` 增加卡片相似锚点识别：内容/节点包含“快团团”“小程序”“＠微信”等时按卡片候选处理。
+- 增加 `textCluster/textClusterTop/textNodeN` 候选，把复合消息里的多个文本碎片合并成长按区域，避免只按 80x40 小节点。
+- `MessageCollector` 增加外部群提示过滤：`此群为外部群，了解更多` 不再被识别为消息行或 K 兜底锚点。
+- 保留原有选群计数/蓝勾逻辑，不改选群流程。
 
 ## 已修改文件
 - `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageForwarder.kt`
+- `android/WeworkForwarder/app/src/main/java/com/wework/forwarder/MessageCollector.kt`
 - `CONTEXT_HANDOFF.md`
 
 ## 关键决策
-- 不加搜索、不加蓝勾识别、不允许部分发送。
-- “计数不可读”不代表失败，也不代表成功；只表示已点过待最终总数确认。
-- 通过最终 `确定(N)` 满额来保证 9 个目标全部选中。
+- “长按进不了多选”分两类处理：真消息但长按点碎片化 → 增加卡片/文本簇候选；系统提示误作锚点 → 系统消息过滤。
+- K 兜底只应计真实消息行，不应把无头像/无气泡的企微提示算入未读消息。
 
 ## 验证情况
 - `git diff --check` 通过。
 - `JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=/opt/homebrew/share/android-commandlinetools ./gradlew assembleDebug` 通过。
 
 ## 未完成事项
-- 待真机验证：83 首次计数不可读后不再二次点击取消；最终 `确定(9)` 才发送。
+- 待真机验证：出现“此群为外部群，了解更多”时，K=3 不再选它为锚点；快团团消息应出现 `cardNode/cardCenter/textCluster` 等候选并进入多选。
 - 待按需提交、打 tag、触发 CI。
 
 ## 已知问题

@@ -232,7 +232,7 @@ object MessageForwarder {
             val rect = candidate.rect
             log("[转发] 长按候选 ${idx + 1}/${candidates.size} ${candidate.source}: (${rect.centerX()}, ${rect.centerY()}) bounds=$rect")
             var longPressed = false
-            if (pressInfo.message.type == "card" && candidate.node != null) {
+            if ((pressInfo.message.type == "card" || candidate.source.startsWith("card")) && candidate.node != null) {
                 longPressed = candidate.node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
                 log("[转发] 卡片候选 ${idx + 1} ACTION_LONG_CLICK=${longPressed}")
                 if (longPressed) GestureHelper.delay(900)
@@ -280,6 +280,7 @@ object MessageForwarder {
         val rowRect = pressInfo.node?.let {
             Rect().also { rect -> it.getBoundsInScreen(rect) }
         }
+        val cardLike = isCardLikeAnchor(pressInfo)
 
         fun rectAround(cx: Int, cy: Int): Rect {
             return Rect(cx - 40, cy - 20, cx + 40, cy + 20)
@@ -317,7 +318,7 @@ object MessageForwarder {
         }
 
         fun addCardCandidates(node: AccessibilityNodeInfo) {
-            if (pressInfo.message.type != "card") return
+            if (!cardLike) return
             val minWidth = (metrics.widthPixels * 0.22f).toInt()
             val minHeight = GestureHelper.dp(38, density)
             val maxRight = (metrics.widthPixels * 0.96f).toInt()
@@ -345,13 +346,63 @@ object MessageForwarder {
             addCandidate("cardText", findMainTextRect(node), durationMs = 900L)
         }
 
+        fun isNoiseText(text: String): Boolean {
+            val s = text.trim()
+            if (s.isEmpty()) return true
+            if (Regex("^(上午|下午)?\\s*\\d{1,2}:\\d{2}(:\\d{2})?$").matches(s)) return true
+            return s == "以下为新消息"
+                || s == "选择到这里"
+                || s == "群成员"
+                || s == "我"
+                || s == "＠微信"
+                || s == "@微信"
+        }
+
+        fun addTextClusterCandidates(node: AccessibilityNodeInfo) {
+            val textRects = NodeFinder.getAllTexts(node)
+                .filter { !isNoiseText(it.text) }
+                .map { it.bounds }
+                .filter { rect ->
+                    rect.width() > 0
+                        && rect.height() > 0
+                        && rect.left > metrics.widthPixels * 0.08f
+                        && rect.right <= metrics.widthPixels * 0.98f
+                        && (rowRect == null || rowRect.contains(rect.centerX(), rect.centerY()))
+                }
+                .distinctBy { "${it.left},${it.top},${it.right},${it.bottom}" }
+
+            if (textRects.isEmpty()) return
+
+            // 复合卡片/小程序消息经常被拆成多个小 TextView；单点长按这些小块不出菜单。
+            // 先用文本簇的外接矩形给出更接近真实消息主体的候选点。
+            val union = Rect(textRects.first())
+            textRects.drop(1).forEach { union.union(it) }
+            if (union.width() >= GestureHelper.dp(90, density) || union.height() >= GestureHelper.dp(42, density)) {
+                addCandidate("textCluster", union, durationMs = if (cardLike) 900L else Config.LONG_PRESS_DURATION)
+                val topThirdY = if (union.height() > 16) {
+                    (union.top + union.height() / 3).coerceIn(union.top + 8, union.bottom - 8)
+                } else {
+                    union.centerY()
+                }
+                addCandidate("textClusterTop", rectAround(union.centerX(), topThirdY), durationMs = if (cardLike) 900L else Config.LONG_PRESS_DURATION)
+            }
+
+            textRects
+                .sortedByDescending { it.width() * it.height() }
+                .take(4)
+                .forEachIndexed { idx, rect ->
+                    addCandidate("textNode${idx + 1}", rect, durationMs = if (cardLike) 900L else Config.LONG_PRESS_DURATION)
+                }
+        }
+
         pressInfo.node?.let { node ->
             addCardCandidates(node)
+            addTextClusterCandidates(node)
         }
-        addCandidate("primaryRect", pressInfo.rect, durationMs = if (pressInfo.message.type == "card") 900L else Config.LONG_PRESS_DURATION)
+        addCandidate("primaryRect", pressInfo.rect, durationMs = if (cardLike) 900L else Config.LONG_PRESS_DURATION)
         pressInfo.node?.let { node ->
-            addCandidate("bubbleCenter", findBubbleRect(node), durationMs = if (pressInfo.message.type == "card") 900L else Config.LONG_PRESS_DURATION)
-            addCandidate("textCenter", findMainTextRect(node), durationMs = if (pressInfo.message.type == "card") 900L else Config.LONG_PRESS_DURATION)
+            addCandidate("bubbleCenter", findBubbleRect(node), durationMs = if (cardLike) 900L else Config.LONG_PRESS_DURATION)
+            addCandidate("textCenter", findMainTextRect(node), durationMs = if (cardLike) 900L else Config.LONG_PRESS_DURATION)
             rowRect?.let { row ->
                 // 行兜底只能在行本身有足够高度时使用，避免把点强行夹到行外导致长按空白。
                 if (row.height() >= GestureHelper.dp(44, density)) {
@@ -363,12 +414,28 @@ object MessageForwarder {
                         (metrics.heightPixels * 0.88f).toInt()
                     )
                     if (screenY in (row.top + GestureHelper.dp(7, density))..(row.bottom - GestureHelper.dp(7, density))) {
-                        addCandidate("rowSafeCenter", rectAround(x, screenY), durationMs = if (pressInfo.message.type == "card") 900L else Config.LONG_PRESS_DURATION)
+                        addCandidate("rowSafeCenter", rectAround(x, screenY), durationMs = if (cardLike) 900L else Config.LONG_PRESS_DURATION)
                     }
                 }
             }
         }
-        return result.take(if (pressInfo.message.type == "card") 8 else 4)
+        return result.take(if (cardLike) 10 else 6)
+    }
+
+    private fun isCardLikeAnchor(pressInfo: MessageCollector.FirstNewMessageInfo): Boolean {
+        if (pressInfo.message.type == "card") return true
+        val content = pressInfo.message.content
+        if (content.contains("小程序")
+            || content.contains("快团团")
+            || content.contains("＠微信")
+            || content.contains("@微信")) {
+            return true
+        }
+        val node = pressInfo.node ?: return false
+        return NodeFinder.getAllTexts(node).any {
+            val text = it.text.trim()
+            text == "小程序" || text == "链接" || text == "网页" || text == "文件"
+        }
     }
 
     private fun findMainTextRect(listItem: AccessibilityNodeInfo): Rect? {
