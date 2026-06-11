@@ -88,31 +88,49 @@ object MessageForwarder {
             if (stopped()) return false
             log("[转发] === 第 ${batchIdx + 1}/${batches.size} 批（${batch.size}个群）===")
 
-            // 第 2 批起发送后会回到源群底部；必须从底部持续上滑复定位同一条第一新消息，
-            // 找到后再走和第 1 批相同的长按、多选、下滑到底流程。
-            log("[转发] 步骤4: 长按消息...")
-            val pressInfo: MessageCollector.FirstNewMessageInfo?
-            if (batchIdx == 0) {
-                pressInfo = anchor
-            } else {
-                pressInfo = MessageCollector.findAnchorByMessage(service, metrics, firstNewMsg)
-            }
-            if (pressInfo == null) {
-                log("[转发] ✗ 取锚点失败,无法长按")
-                dumpOnFailure(service, "找不到锚点_批${batchIdx + 1}")
-                return false
-            }
-            // 步骤5：只在锚点消息内部尝试多个长按点，确认进入多选后才继续扩选。
-            if (!enterMultiSelectFromAnchor(service, metrics, pressInfo, batchIdx + 1)) {
-                return false
-            }
+            var selectReady = false
+            for (selectAttempt in 0..1) {
+                // 第 2 批起发送后会回到源群底部；必须从底部持续上滑复定位同一条第一新消息，
+                // 找到后再走和第 1 批相同的长按、多选、下滑到底流程。
+                log("[转发] 步骤4: 长按消息${if (selectAttempt > 0) "（重试${selectAttempt + 1}/2）" else ""}...")
+                val pressInfo: MessageCollector.FirstNewMessageInfo? = if (batchIdx == 0 && selectAttempt == 0) {
+                    anchor
+                } else {
+                    MessageCollector.findAnchorByMessage(service, metrics, firstNewMsg)
+                }
+                if (pressInfo == null) {
+                    log("[转发] ✗ 取锚点失败,无法长按")
+                    dumpOnFailure(service, "找不到锚点_批${batchIdx + 1}")
+                    return false
+                }
+                // 步骤5：只在锚点消息内部尝试多个长按点，确认进入多选后才继续扩选。
+                if (!enterMultiSelectFromAnchor(service, metrics, pressInfo, batchIdx + 1)) {
+                    return false
+                }
 
-            // 分割线/时间行路径必须滑到底，选中从锚点到当前最新消息的整批内容。
-            log("[转发] 步骤6: 滚动全选 (needScroll=$usedDivider)...")
-            if (!scrollAndSelectToHere(service, metrics, needScroll = usedDivider)) {
-                log("[转发] ✗ 全选失败")
-                dumpOnFailure(service, "全选失败_批${batchIdx + 1}")
+                // 分割线/时间行路径必须滑到底，选中从锚点到当前最新消息的整批内容。
+                log("[转发] 步骤6: 滚动全选 (needScroll=$usedDivider)...")
+                if (scrollAndSelectToHere(
+                        service,
+                        metrics,
+                        needScroll = usedDivider,
+                        expectedMinSelected = unreadCount.coerceIn(1, Config.maxForwardCount)
+                    )) {
+                    selectReady = true
+                    break
+                }
+
+                log("[转发] ✗ 全选失败${if (selectAttempt == 0) "，退出多选后重试一次" else ""}")
                 exitMultiSelect(service)
+                if (selectAttempt == 0) {
+                    GestureHelper.delay(800)
+                    continue
+                }
+                dumpOnFailure(service, "全选失败_批${batchIdx + 1}")
+                return false
+            }
+            if (!selectReady) {
+                log("[转发] ✗ 全选失败")
                 return false
             }
             log("[转发] ✓ 全选完成")
@@ -536,6 +554,43 @@ object MessageForwarder {
         return false
     }
 
+    private fun readMessageMultiSelectCount(service: WeWorkAccessibilityService): Int? {
+        val pattern = Regex("转发\\s*[（(]\\s*(\\d+)\\s*[）)]")
+        for (root in service.getAllRootNodes()) {
+            val nodes = NodeFinder.findAll(root) { node ->
+                val text = node.text?.toString().orEmpty()
+                val desc = node.contentDescription?.toString().orEmpty()
+                pattern.containsMatchIn(text) || pattern.containsMatchIn(desc)
+            }
+            for (node in nodes) {
+                val raw = node.text?.toString().orEmpty()
+                    .ifBlank { node.contentDescription?.toString().orEmpty() }
+                val count = pattern.find(raw)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                if (count != null) return count
+            }
+        }
+        return null
+    }
+
+    private fun verifySelectedRange(
+        service: WeWorkAccessibilityService,
+        expectedMinSelected: Int
+    ): Boolean {
+        if (expectedMinSelected <= 1) return true
+        GestureHelper.delay(500)
+        val selectedCount = readMessageMultiSelectCount(service)
+        if (selectedCount == null) {
+            log("[转发] 已点击'选择到这里'，但读取不到转发数量，继续兼容执行")
+            return true
+        }
+        if (selectedCount < expectedMinSelected) {
+            log("[转发] ✗ 多选数量不足: 已选=$selectedCount, 未读触发=$expectedMinSelected，疑似只选中最后一条")
+            return false
+        }
+        log("[转发] 多选数量校验通过: 已选=$selectedCount, 未读触发=$expectedMinSelected")
+        return true
+    }
+
     /**
      * 向下滑动到底部，找到正确方向的"选择到这里"按钮并点击
      *
@@ -547,7 +602,12 @@ object MessageForwarder {
      * needScroll=true 时必须先观察到列表内容发生过移动，避免手势未生效/控件树未刷新时误判到底。
      * 不再用"按钮 y 位置"判断，因为按钮位置取决于多选锚点，与列表是否到底无关。
      */
-    private fun scrollAndSelectToHere(service: WeWorkAccessibilityService, metrics: DisplayMetrics, needScroll: Boolean = false): Boolean {
+    private fun scrollAndSelectToHere(
+        service: WeWorkAccessibilityService,
+        metrics: DisplayMetrics,
+        needScroll: Boolean = false,
+        expectedMinSelected: Int = 1
+    ): Boolean {
         fun findChatList(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
             return root?.let {
                 NodeFinder.findByClassName(it, "android.widget.ListView")
@@ -604,7 +664,56 @@ object MessageForwarder {
             log("[转发] $reason，点击'选择到这里' y=${rect.centerY()}")
             service.clickAt(rect.centerX().toFloat(), rect.centerY().toFloat())
             GestureHelper.delay(1000)
-            return true
+            return verifySelectedRange(service, expectedMinSelected)
+        }
+
+        fun smallSwipeTowardLatest(attempt: Int) {
+            val w = metrics.widthPixels.toFloat()
+            val h = metrics.heightPixels.toFloat()
+            val fromY = h * 0.56f
+            val toY = h * (0.50f - attempt.coerceAtMost(2) * 0.015f)
+            service.swipe(w / 2, fromY, w / 2, toY, duration = 520)
+            GestureHelper.delayExact(520)
+        }
+
+        fun smallSwipeTowardOlder(attempt: Int) {
+            val w = metrics.widthPixels.toFloat()
+            val h = metrics.heightPixels.toFloat()
+            val fromY = h * 0.50f
+            val toY = h * (0.56f + attempt.coerceAtMost(2) * 0.015f)
+            service.swipe(w / 2, fromY, w / 2, toY, duration = 520)
+            GestureHelper.delayExact(520)
+        }
+
+        fun recoverBottomSelectButton(): Boolean {
+            for (attempt in 1..5) {
+                val beforeBtn = findSelectToHereDown(service, strict = false)
+                if (beforeBtn != null) {
+                    val r = Rect()
+                    beforeBtn.getBoundsInScreen(r)
+                    if (r.centerY() > metrics.heightPixels / 2) {
+                        return clickSelectRect(r, "到底恢复第 $attempt 轮找到按钮")
+                    }
+                    log("[转发] 到底恢复第 $attempt 轮仅见上半屏'选择到这里'(y=${r.centerY()})，继续微调")
+                } else {
+                    log("[转发] 到底恢复第 $attempt 轮未见'选择到这里'，继续微调")
+                }
+
+                // 先继续朝最新消息方向小幅推；仍无按钮时再反向一点点找回底部按钮。
+                if (attempt <= 3) {
+                    smallSwipeTowardLatest(attempt)
+                } else {
+                    smallSwipeTowardOlder(attempt - 3)
+                }
+
+                val retryBtn = findSelectToHereDown(service)
+                if (retryBtn != null) {
+                    val r = Rect()
+                    retryBtn.getBoundsInScreen(r)
+                    return clickSelectRect(r, "到底恢复后找到按钮")
+                }
+            }
+            return false
         }
 
         while (CollectorService.isRunning) {
@@ -676,14 +785,8 @@ object MessageForwarder {
                         }
                         log("[转发] 已确认到底但当前'选择到这里'在上半屏(y=${r.centerY()})，不点击反向按钮")
                     }
-                    log("[转发] 已确认到底但找不到底部'选择到这里'按钮，swipeUp 小幅回拉后重试")
-                    GestureHelper.swipeUp(service, metrics)
-                    val retryBtn = findSelectToHereDown(service)
-                    if (retryBtn != null) {
-                        val r = Rect()
-                        retryBtn.getBoundsInScreen(r)
-                        return clickSelectRect(r, "回拉后找到按钮")
-                    }
+                    log("[转发] 已确认到底但找不到底部'选择到这里'按钮，进入有限恢复")
+                    if (recoverBottomSelectButton()) return true
                     log("[转发] 已确认到底但无可用'选择到这里'按钮")
                     return false
                 }
@@ -763,6 +866,12 @@ object MessageForwarder {
         val root = service.getRootNode()
         val forwardBtn = NodeFinder.findByText(root, "转发")
             ?: NodeFinder.findByDesc(root, "转发")
+            ?: NodeFinder.findByTextRegex(root, Regex("转发\\s*[（(]\\s*\\d+\\s*[）)]"))
+            ?: root?.let {
+                NodeFinder.findAll(it) { node ->
+                    node.contentDescription?.toString()?.matches(Regex("转发\\s*[（(]\\s*\\d+\\s*[）)]")) == true
+                }.firstOrNull()
+            }
         if (forwardBtn == null) {
             log("[转发] 找不到'转发'按钮")
             return false
@@ -848,7 +957,8 @@ object MessageForwarder {
                 node.getBoundsInScreen(rect)
                 val cy = rect.centerY()
                 cy in rowRect.top..rowRect.bottom
-                    && cy in topSafe..bottomSafe
+                    && rect.top >= topSafe
+                    && rect.bottom <= bottomSafe
                     && rect.left >= listRect.left
                     && rect.right <= leftZoneRight
                     && rect.top >= listRect.top
@@ -864,6 +974,20 @@ object MessageForwarder {
                 node.getBoundsInScreen(rect)
                 rect.left
             }
+        }
+
+        fun checkboxState(node: AccessibilityNodeInfo?): Boolean? {
+            node ?: return null
+            val cls = node.className?.toString() ?: ""
+            val desc = node.contentDescription?.toString()?.trim().orEmpty()
+            val text = node.text?.toString()?.trim().orEmpty()
+            val label = "$desc$text"
+            if (label.contains("已选择") || label.contains("已选中")) return true
+            if (label.contains("未选择") || label.contains("未选中")) return false
+            if (node.isChecked) return true
+            if (node.isSelected) return true
+            if (node.isCheckable || cls.contains("CheckBox")) return node.isChecked
+            return null
         }
 
         data class ClickResult(
@@ -887,6 +1011,11 @@ object MessageForwarder {
                 }
                 val br = Rect().also { box.getBoundsInScreen(it) }
                 val where = "node(${br.centerX()},${br.centerY()})"
+                val beforeState = checkboxState(box)
+                if (beforeState == true) {
+                    log("[选群] ✓ 已处于选中状态: $groupName $where")
+                    return ClickResult("confirmed", beforeCount)
+                }
                 val clicked = NodeFinder.clickNode(service, box)
                 if (!clicked) {
                     log("[选群] 点击失败: $groupName $where, attempt=${attempt + 1}")
@@ -898,9 +1027,15 @@ object MessageForwarder {
                     GestureHelper.delay(500)
                     afterCount = readSelectedCount(service.getRootNode())
                 }
+                val afterBox = findRowCheckbox(rowRect, listRect, topSafe, bottomSafe)
+                val afterState = checkboxState(afterBox)
                 if (beforeCount == null || afterCount == null) {
-                    log("[选群] 计数不可读，已点击待最终确认: $groupName $where")
-                    return ClickResult("pending_confirm", afterCount)
+                    if (afterState == true) {
+                        log("[选群] 计数不可读，但复选框已选中，待最终确认: $groupName $where")
+                        return ClickResult("pending_confirm", afterCount)
+                    }
+                    log("[选群] 计数不可读且复选框未确认选中: $groupName $where state=$afterState")
+                    return@repeat
                 }
                 when {
                     afterCount == beforeCount + 1 -> {
@@ -910,6 +1045,10 @@ object MessageForwarder {
                     afterCount < beforeCount -> {
                         log("[选群] ✗ 疑似误取消已选群: $groupName $where 计数 $beforeCount->$afterCount")
                         return ClickResult("fatal", afterCount)
+                    }
+                    afterState == true -> {
+                        log("[选群] 计数暂未增长但复选框已选中，待最终确认: $groupName $where 计数 $beforeCount->$afterCount")
+                        return ClickResult("pending_confirm", afterCount)
                     }
                     else -> {
                         log("[选群] 点击后计数未增长: $groupName ($beforeCount->$afterCount), attempt=${attempt + 1}")
@@ -957,14 +1096,15 @@ object MessageForwarder {
                 confirmBtn?.getBoundsInScreen(rect)
                 if (confirmBtn != null) rect.top else listRect.bottom
             }
+            val bottomMargin = GestureHelper.dp(24, metrics.density)
             val topSafe = maxOf(
                 listRect.top + 12,
                 (metrics.heightPixels * 0.10f).toInt()
             )
             val bottomSafeCandidate = minOf(
-                listRect.bottom - 12,
-                confirmTop - 12,
-                (metrics.heightPixels * 0.96f).toInt()
+                listRect.bottom - bottomMargin,
+                confirmTop - bottomMargin,
+                (metrics.heightPixels * 0.90f).toInt()
             )
             val bottomSafe = if (bottomSafeCandidate > topSafe) {
                 bottomSafeCandidate
